@@ -4,6 +4,7 @@
 //! plus a `/`-separated path *relative to that root*. Every operation resolves that pair through
 //! [`resolve_in`], which fails closed if the result could land outside the root.
 
+use crate::import::STAGING_PREFIX;
 use serde::Serialize;
 use std::ffi::OsString;
 use std::fs;
@@ -12,6 +13,7 @@ use std::sync::RwLock;
 use std::time::UNIX_EPOCH;
 
 pub const MAX_TEXT_BYTES: u64 = 1024 * 1024;
+pub const MAX_BINARY_BYTES: u64 = 25 * 1024 * 1024;
 const MAX_ENTRIES: usize = 10_000;
 const MAX_COPY_DEPTH: usize = 64;
 
@@ -42,7 +44,17 @@ const BLOCKED_OPEN: &[&str] = &[
     "msc",
     "appref-ms",
     "application",
+    "sh",
+    "appimage",
+    "run",
 ];
+
+/// True for file types that can execute code on a Windows or Linux host.
+pub fn is_program_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| BLOCKED_OPEN.contains(&e.to_ascii_lowercase().as_str()))
+}
 
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "lowercase")]
@@ -53,6 +65,10 @@ pub enum RootKind {
     Host,
     /// A folder the user explicitly added.
     Custom,
+    /// A host folder linked in place (not copied). Edits here change the original.
+    Link,
+    /// A single host file linked in place. The root *is* the file.
+    LinkFile,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -65,7 +81,9 @@ pub struct Root {
 }
 
 fn ser_path<S: serde::Serializer>(p: &Path, s: S) -> Result<S::Ok, S::Error> {
-    s.serialize_str(&p.to_string_lossy())
+    let text = p.to_string_lossy();
+    // Windows canonical paths carry a verbatim prefix that is noise in the UI.
+    s.serialize_str(text.strip_prefix(r"\\?\").unwrap_or(&text))
 }
 
 #[derive(Serialize, Debug)]
@@ -121,6 +139,9 @@ fn segments(rel: &str) -> Result<Vec<&str>, String> {
         if seg.is_empty() || seg == "." {
             continue;
         }
+        if seg.starts_with(STAGING_PREFIX) {
+            return Err("that name is reserved by NovaOS".into());
+        }
         validate_name(seg)?; // also rejects "..", drive letters and alternate data streams
         out.push(seg);
     }
@@ -167,7 +188,8 @@ fn join_rel(dir: &str, name: &str) -> Result<String, String> {
     Ok(segs.join("/"))
 }
 
-fn unique_dest(dir: &Path, name: &str) -> PathBuf {
+/// A path in `dir` for `name` that does not exist yet ("name (2).ext", ...). Never overwrites.
+pub fn unique_dest(dir: &Path, name: &str) -> PathBuf {
     let first = dir.join(name);
     if fs::symlink_metadata(&first).is_err() {
         return first;
@@ -272,6 +294,78 @@ impl Vfs {
         Ok(root)
     }
 
+    /// Link a host file or folder in place. Nothing is copied: edits made through NovaOS change
+    /// the original. `avoid` lists NovaOS's own data folders, which can never be linked.
+    pub fn add_link(&self, id: i64, path: &Path, avoid: &[PathBuf]) -> Result<Root, String> {
+        self.add_link_inner(id, path, avoid, true)
+    }
+
+    fn add_link_inner(
+        &self,
+        id: i64,
+        path: &Path,
+        avoid: &[PathBuf],
+        check_protected: bool,
+    ) -> Result<Root, String> {
+        let md = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+        if md.file_type().is_symlink() {
+            return Err("links and junctions cannot be linked; pick the real item".into());
+        }
+        let is_file = md.is_file();
+        if !is_file && !md.is_dir() {
+            return Err("only files and folders can be linked".into());
+        }
+        let canon = path.canonicalize().map_err(|e| e.to_string())?;
+        if !is_file && canon.parent().is_none() {
+            return Err("whole drives cannot be linked; pick a folder".into());
+        }
+        if check_protected && is_protected(&canon) {
+            return Err("system and program folders cannot be linked".into());
+        }
+        if avoid
+            .iter()
+            .any(|a| canon.starts_with(a) || a.starts_with(&canon))
+        {
+            return Err("NovaOS's own data folders cannot be linked".into());
+        }
+        // Prove we can actually read it now, so a failure is explained up front.
+        if is_file {
+            fs::File::open(&canon).map_err(|e| e.to_string())?;
+        } else {
+            fs::read_dir(&canon).map_err(|e| e.to_string())?;
+        }
+        let mut roots = self.roots.write().map_err(|_| "lock poisoned")?;
+        if roots.iter().any(|r| r.path == canon) {
+            return Err("that is already available in NovaOS".into());
+        }
+        let root = Root {
+            id: format!("link-{id}"),
+            label: canon
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "Linked".into()),
+            kind: if is_file {
+                RootKind::LinkFile
+            } else {
+                RootKind::Link
+            },
+            path: canon,
+        };
+        roots.push(root.clone());
+        Ok(root)
+    }
+
+    /// Stops referencing a linked item. The original is never touched.
+    pub fn remove_link(&self, id: &str) -> Result<(), String> {
+        let mut roots = self.roots.write().map_err(|_| "lock poisoned")?;
+        let before = roots.len();
+        roots.retain(|r| !(r.id == id && matches!(r.kind, RootKind::Link | RootKind::LinkFile)));
+        if roots.len() == before {
+            return Err("that is not a linked item".into());
+        }
+        Ok(())
+    }
+
     pub fn remove_custom(&self, id: &str) -> Result<(), String> {
         let mut roots = self.roots.write().map_err(|_| "lock poisoned")?;
         let before = roots.len();
@@ -288,6 +382,13 @@ impl Vfs {
             .iter()
             .find(|r| r.id == root)
             .ok_or("unknown location")?;
+        if r.kind == RootKind::LinkFile {
+            return if is_root_path(rel)? {
+                Ok(r.path.clone())
+            } else {
+                Err("not a folder".into())
+            };
+        }
         resolve_in(&r.path, rel)
     }
 
@@ -299,12 +400,38 @@ impl Vfs {
         self.path(root, rel)
     }
 
+    /// Like `path_inside`, but a linked *file* root may be addressed as itself, so it can be read,
+    /// edited and opened (never renamed, moved or deleted).
+    fn path_file(&self, root: &str, rel: &str) -> Result<PathBuf, String> {
+        let is_file_root = self
+            .roots
+            .read()
+            .map_err(|_| "lock poisoned")?
+            .iter()
+            .any(|r| r.id == root && r.kind == RootKind::LinkFile);
+        if !is_file_root {
+            return self.path_inside(root, rel);
+        }
+        let p = self.path(root, rel)?;
+        // The original could have been swapped for a link since it was linked.
+        if fs::symlink_metadata(&p)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(true)
+        {
+            return Err("the linked file is no longer a regular file".into());
+        }
+        Ok(p)
+    }
+
     pub fn list(&self, root: &str, rel: &str) -> Result<Listing, String> {
         let dir = self.path(root, rel)?;
         let mut entries = Vec::new();
         let mut truncated = false;
         for e in fs::read_dir(&dir).map_err(|e| e.to_string())? {
             let Ok(e) = e else { continue };
+            if e.file_name().to_string_lossy().starts_with(STAGING_PREFIX) {
+                continue; // import work-in-progress is never shown
+            }
             if entries.len() >= MAX_ENTRIES {
                 truncated = true;
                 break;
@@ -382,7 +509,8 @@ impl Vfs {
         dest_root: &str,
         dest_dir: &str,
     ) -> Result<String, String> {
-        let (src, dest_dir_abs, name) = self.transfer_paths(root, rel, dest_root, dest_dir)?;
+        let (src, dest_dir_abs, name) =
+            self.transfer_paths(root, rel, dest_root, dest_dir, true)?;
         let dst = unique_dest(&dest_dir_abs, &name);
         copy_tree(&src, &dst, 0)?;
         join_rel(
@@ -398,7 +526,8 @@ impl Vfs {
         dest_root: &str,
         dest_dir: &str,
     ) -> Result<String, String> {
-        let (src, dest_dir_abs, name) = self.transfer_paths(root, rel, dest_root, dest_dir)?;
+        let (src, dest_dir_abs, name) =
+            self.transfer_paths(root, rel, dest_root, dest_dir, false)?;
         if src.parent() == Some(dest_dir_abs.as_path()) {
             return Ok(segments(rel)?.join("/")); // already there
         }
@@ -424,8 +553,13 @@ impl Vfs {
         rel: &str,
         dest_root: &str,
         dest_dir: &str,
+        copying: bool,
     ) -> Result<(PathBuf, PathBuf, String), String> {
-        let src = self.path_inside(root, rel)?;
+        let src = if copying {
+            self.path_file(root, rel)?
+        } else {
+            self.path_inside(root, rel)?
+        };
         let dest_dir_abs = self.path(dest_root, dest_dir)?;
         if !dest_dir_abs.is_dir() {
             return Err("destination is not a folder".into());
@@ -448,7 +582,7 @@ impl Vfs {
     }
 
     pub fn read_text(&self, root: &str, rel: &str) -> Result<String, String> {
-        let p = self.path_inside(root, rel)?;
+        let p = self.path_file(root, rel)?;
         let md = fs::metadata(&p).map_err(|e| e.to_string())?;
         if !md.is_file() {
             return Err("not a file".into());
@@ -464,25 +598,37 @@ impl Vfs {
         if text.len() as u64 > MAX_TEXT_BYTES {
             return Err("text is too large (limit 1 MB)".into());
         }
-        let p = self.path_inside(root, rel)?;
+        let p = self.path_file(root, rel)?;
         if p.is_dir() {
             return Err("that is a folder".into());
         }
         fs::write(p, text).map_err(|e| e.to_string())
     }
 
+    /// Raw bytes for viewers (images). Capped so a huge file can't flood the UI.
+    pub fn read_binary(&self, root: &str, rel: &str) -> Result<Vec<u8>, String> {
+        let p = self.path_file(root, rel)?;
+        let md = fs::metadata(&p).map_err(|e| e.to_string())?;
+        if !md.is_file() {
+            return Err("not a file".into());
+        }
+        if md.len() > MAX_BINARY_BYTES {
+            return Err("file is too large to preview (limit 25 MB)".into());
+        }
+        fs::read(&p).map_err(|e| e.to_string())
+    }
+
     /// Hand a file to the host's default application, unless it could execute code.
     pub fn open_externally(&self, root: &str, rel: &str) -> Result<(), String> {
-        let p = self.path_inside(root, rel)?;
+        let p = self.path_file(root, rel)?;
         if p.is_dir() {
             return Err("that is a folder".into());
         }
-        if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
-            if BLOCKED_OPEN.contains(&ext.to_ascii_lowercase().as_str()) {
-                return Err(format!(
-                    ".{ext} files can run code, so NovaOS will not launch them"
-                ));
-            }
+        if is_program_file(&p) {
+            return Err(
+                "NovaOS can't run Windows or Linux programs. Open it from your host system if you trust it."
+                    .into(),
+            );
         }
         opener::open(p).map_err(|e| e.to_string())
     }
@@ -657,10 +803,18 @@ mod tests {
     fn refuses_to_launch_executables() {
         let d = TempDir::new().unwrap();
         let v = vfs_with(&d);
-        for n in ["a.exe", "b.BAT", "c.ps1", "d.lnk", "e.Js"] {
+        for n in [
+            "a.exe",
+            "b.BAT",
+            "c.ps1",
+            "d.lnk",
+            "e.Js",
+            "f.sh",
+            "g.AppImage",
+        ] {
             v.create_file("t", n).unwrap();
             assert!(
-                v.open_externally("t", n).unwrap_err().contains("run code"),
+                v.open_externally("t", n).unwrap_err().contains("can't run"),
                 "{n}"
             );
         }
@@ -732,5 +886,132 @@ mod tests {
             "built-in roots are not removable"
         );
         v.remove_custom(&r.id).unwrap();
+    }
+    #[test]
+    fn linked_folder_works_in_place_and_unlinking_spares_the_original() {
+        let nova = TempDir::new().unwrap();
+        let orig = TempDir::new().unwrap();
+        fs::write(orig.path().join("doc.txt"), "original").unwrap();
+        let v = vfs_with(&nova);
+        let r = v.add_link_inner(7, orig.path(), &[], false).unwrap();
+        assert_eq!((r.id.as_str(), r.kind), ("link-7", RootKind::Link));
+        assert_eq!(v.read_text("link-7", "doc.txt").unwrap(), "original");
+        // edits through the link change the original; that is exactly what the UI warns about
+        v.write_text("link-7", "doc.txt", "edited").unwrap();
+        assert_eq!(
+            fs::read_to_string(orig.path().join("doc.txt")).unwrap(),
+            "edited"
+        );
+        assert!(
+            v.rename("link-7", "", "x").is_err(),
+            "the linked root itself is immutable"
+        );
+        assert!(
+            v.add_link_inner(8, orig.path(), &[], false).is_err(),
+            "no duplicate links"
+        );
+        assert!(
+            v.remove_link("t").is_err(),
+            "built-in roots are not unlinkable"
+        );
+        v.remove_link("link-7").unwrap();
+        assert!(v.list("link-7", "").is_err(), "reference gone");
+        assert_eq!(
+            fs::read_to_string(orig.path().join("doc.txt")).unwrap(),
+            "edited",
+            "unlinking never touches the original"
+        );
+    }
+
+    #[test]
+    fn linked_file_root_can_be_read_written_and_copied_but_not_restructured() {
+        let nova = TempDir::new().unwrap();
+        let orig = TempDir::new().unwrap();
+        let file = orig.path().join("notes.md");
+        fs::write(&file, "hello").unwrap();
+        let v = vfs_with(&nova);
+        let r = v.add_link_inner(1, &file, &[], false).unwrap();
+        assert_eq!(r.kind, RootKind::LinkFile);
+        assert_eq!(v.read_text("link-1", "").unwrap(), "hello");
+        assert_eq!(v.read_binary("link-1", "").unwrap(), b"hello");
+        v.write_text("link-1", "", "changed").unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "changed");
+        assert!(
+            v.read_text("link-1", "sub").is_err(),
+            "a file has no children"
+        );
+        assert!(v.list("link-1", "").is_err());
+        assert!(v.trash("link-1", "").is_err());
+        assert!(v.rename("link-1", "", "z").is_err());
+        assert!(
+            v.mv("link-1", "", "t", "").is_err(),
+            "moving would remove the original"
+        );
+        assert_eq!(
+            v.copy("link-1", "", "t", "").unwrap(),
+            "notes.md",
+            "copying out is fine"
+        );
+        assert_eq!(
+            fs::read_to_string(nova.path().join("notes.md")).unwrap(),
+            "changed"
+        );
+        assert!(file.exists());
+    }
+
+    #[test]
+    fn link_refusals() {
+        let nova = TempDir::new().unwrap();
+        let v = vfs_with(&nova);
+        assert!(
+            v.add_link(1, Path::new("C:\\"), &[]).is_err(),
+            "whole drive"
+        );
+        if let Some(win) = std::env::var_os("SystemRoot") {
+            assert!(
+                v.add_link(2, Path::new(&win), &[]).is_err(),
+                "system folder"
+            );
+            assert!(
+                v.add_link(3, &PathBuf::from(&win).join("notepad.exe"), &[])
+                    .is_err(),
+                "file inside a system folder"
+            );
+        }
+        let canon = nova.path().canonicalize().unwrap();
+        assert!(
+            v.add_link_inner(4, nova.path(), std::slice::from_ref(&canon), false)
+                .is_err(),
+            "NovaOS data itself"
+        );
+        let inside = nova.path().join("inner");
+        fs::create_dir(&inside).unwrap();
+        assert!(
+            v.add_link_inner(5, &inside, std::slice::from_ref(&canon), false)
+                .is_err(),
+            "something inside NovaOS data"
+        );
+        assert!(v
+            .add_link_inner(6, &nova.path().join("missing"), &[], false)
+            .is_err());
+        let _ = canon;
+    }
+
+    #[test]
+    fn staging_names_are_hidden_and_unreachable() {
+        let d = TempDir::new().unwrap();
+        let v = vfs_with(&d);
+        fs::create_dir(d.path().join(".nova-staging-x")).unwrap();
+        fs::write(d.path().join("visible.txt"), "v").unwrap();
+        let names: Vec<_> = v
+            .list("t", "")
+            .unwrap()
+            .entries
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(names, ["visible.txt"]);
+        assert!(v.list("t", ".nova-staging-x").is_err());
+        assert!(v.mkdir("t", ".nova-staging-new").is_err());
     }
 }

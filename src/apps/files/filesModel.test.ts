@@ -6,9 +6,12 @@ import {
   canForward,
   currentLocation,
   forward,
+  formatDuration,
   formatSize,
+  formatSpeed,
   initialHistory,
   isTextFile,
+  openerFor,
   joinPath,
   navigate,
   parentPath,
@@ -42,6 +45,24 @@ describe('path helpers', () => {
     expect(isTextFile('photo.png')).toBe(false);
     expect(isTextFile('.gitignore')).toBe(false);
     expect(isTextFile('noext')).toBe(false);
+  });
+});
+
+describe('openers and formatting', () => {
+  it('routes files to the right app and never to a program launcher', () => {
+    expect(openerFor('a.md')).toBe('editor');
+    expect(openerFor('Photo.JPG')).toBe('viewer');
+    expect(openerFor('logo.svg')).toBe('viewer');
+    expect(openerFor('report.pdf')).toBe('external');
+    expect(openerFor('setup.exe')).toBe('external'); // the backend then refuses it
+  });
+
+  it('formats speed and durations', () => {
+    expect(formatSpeed(1536)).toBe('1.5 KB/s');
+    expect(formatSpeed(-5)).toBe('0 B/s');
+    expect(formatDuration(5)).toBe('5s');
+    expect(formatDuration(185)).toBe('3m 05s');
+    expect(formatDuration(3720)).toBe('1h 02m');
   });
 });
 

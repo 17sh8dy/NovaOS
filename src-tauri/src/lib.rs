@@ -1,7 +1,11 @@
 mod db;
+mod import;
+mod import_cmds;
+mod import_store;
 mod vfs;
 
 use db::Db;
+use import_cmds::ImportState;
 use serde::Serialize;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager, State, WebviewWindow};
@@ -121,6 +125,16 @@ fn fs_write_text(
     vfs.write_text(&root, &path, &text)
 }
 
+/// Raw bytes for the image viewer, sent as a binary response rather than a JSON number array.
+#[tauri::command]
+fn fs_read_binary(
+    vfs: State<'_, Vfs>,
+    root: String,
+    path: String,
+) -> Result<tauri::ipc::Response, String> {
+    vfs.read_binary(&root, &path).map(tauri::ipc::Response::new)
+}
+
 #[tauri::command]
 fn fs_open_external(vfs: State<'_, Vfs>, root: String, path: String) -> Result<(), String> {
     vfs.open_externally(&root, &path)
@@ -157,7 +171,14 @@ fn persist_custom_roots(vfs: &Vfs, db: &Db) -> Result<(), String> {
 fn build_vfs(app: &tauri::App, db: &Db) -> Result<Vfs, Box<dyn std::error::Error>> {
     let paths = app.path();
     let nova_home = paths.app_data_dir()?.join("NovaFiles");
-    for sub in ["Documents", "Pictures", "Music", "Downloads", "Desktop"] {
+    for sub in [
+        "Documents",
+        "Pictures",
+        "Music",
+        "Downloads",
+        "Desktop",
+        "Imports",
+    ] {
         std::fs::create_dir_all(nova_home.join(sub))?;
     }
     let mut roots = vec![Root {
@@ -205,8 +226,13 @@ pub fn run() {
             std::fs::create_dir_all(&dir)?;
             let db = Db::open(&dir.join("novaos.db"))?;
             let vfs = build_vfs(app, &db)?;
+            let data_dir = dir.canonicalize()?;
+            let imports =
+                ImportState::new(data_dir.join("NovaFiles").join("Imports"), vec![data_dir]);
+            import_cmds::restore(&db, &vfs, &imports);
             app.manage(db);
             app.manage(vfs);
+            app.manage(imports);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -223,10 +249,19 @@ pub fn run() {
             fs_move,
             fs_trash,
             fs_read_text,
+            fs_read_binary,
             fs_write_text,
             fs_open_external,
             fs_add_root,
             fs_remove_root,
+            import_cmds::import_pick,
+            import_cmds::import_scan,
+            import_cmds::import_cancel,
+            import_cmds::import_discard,
+            import_cmds::import_status,
+            import_cmds::import_start,
+            import_cmds::import_list,
+            import_cmds::import_unlink,
         ])
         .run(tauri::generate_context!())
         .expect("error while running NovaOS");

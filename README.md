@@ -22,12 +22,12 @@ cd src-tauri && cargo clippy --all-targets -- -D warnings && cargo test
 
 ## Layout
 
-| Path             | What                                                          |
-| ---------------- | ------------------------------------------------------------- |
-| `src/kernel/`    | Window manager store (`windowStore.ts`) and app registry      |
-| `src/shell/`     | Desktop, Window, Taskbar, Start menu, display modes, theme    |
-| `src/apps/`      | Built-in apps (Calculator, Notes, Settings)                   |
-| `src/native/`    | The only bridge to Rust (`native()`), and key/value storage   |
+| Path             | What                                                                               |
+| ---------------- | ---------------------------------------------------------------------------------- |
+| `src/kernel/`    | Window manager store (`windowStore.ts`) and app registry                           |
+| `src/shell/`     | Desktop, Window, Taskbar, Start menu, display modes, theme                         |
+| `src/apps/`      | Built-in apps (Calculator, Notes, Settings)                                        |
+| `src/native/`    | The only bridge to Rust (`native()`), and key/value storage                        |
 | `src-tauri/src/` | Rust backend: SQLite (`db.rs`), virtual filesystem (`vfs.rs`), commands (`lib.rs`) |
 
 ## Display modes
@@ -53,3 +53,26 @@ user adds in Settings (whole drives, system folders and the whole user profile a
 `vfs::resolve_in` rejects `..`, drive letters, alternate data streams and reserved names, and
 canonicalizes through symlinks/junctions so nothing can resolve outside its root. Copy/move never
 overwrite, delete goes to the Recycle Bin, and executable file types are never launched.
+
+## Importing host files
+
+Nova Files → **Import** brings Windows/Linux files and folders in through the native picker
+(the dialog runs in Rust; the UI only ever holds an opaque selection id, never a host path).
+
+- **Copy** (default): independent copies in `NovaFiles/Imports`. Source files are opened read-only
+  and nothing in the engine can write or delete a source path. Each top-level item is built in a
+  hidden `.nova-staging-*` folder and moved into place only when complete, so a cancel, crash or
+  full disk never leaves a half-copied item. Names never overwrite (`name (2)`). Folder structure,
+  empty folders and file modification times are preserved; permissions are not (copies are plain
+  editable files). A read-only scan first reports file counts, size, free space, skipped links and
+  unreadable items.
+- **Link**: references the original in place, nothing copied. Requires an explicit acknowledgement
+  that edits/renames/deletes change the originals; linked items sit under a warning "Linked"
+  heading. Unlinking removes only the reference.
+- Links/junctions are never followed or copied; special files are skipped; locked or unreadable
+  files are reported and the rest continue; a full disk stops the job and removes the in-flight item.
+- Metadata (per-item and per-file size and original mtime, status, errors) lives in SQLite
+  (`imports`, `import_files`). Interrupted jobs are cleaned up at next start.
+- Text opens in Nova Editor, images in Nova Viewer, other files in the host's default app.
+  **NovaOS cannot run imported Windows or Linux programs**: `.exe`, `.bat`, `.sh` and similar are
+  stored as data and refused by the launcher.

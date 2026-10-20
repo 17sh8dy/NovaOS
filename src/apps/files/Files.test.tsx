@@ -17,6 +17,10 @@ vi.mock('./filesApi', () => ({
   },
 }));
 vi.mock('../../kernel/launcher', () => ({ launchApp: vi.fn() }));
+vi.mock('./importApi', () => ({
+  importApi: { list: vi.fn().mockResolvedValue([]) },
+  onImportProgress: vi.fn(),
+}));
 
 import { Files, useFileClipboard } from './Files';
 import { filesApi } from './filesApi';
@@ -42,7 +46,7 @@ beforeEach(() => {
   api.list.mockImplementation(async (_root, path) => ({
     entries:
       path === ''
-        ? [dir('Docs'), file('a.txt'), file('pic.png', 2048), file('run.exe')]
+        ? [dir('Docs'), file('a.txt'), file('pic.png', 2048), file('run.exe'), file('report.pdf')]
         : [file('inner.md')],
     truncated: false,
   }));
@@ -82,13 +86,15 @@ describe('Nova Files', () => {
     await waitFor(() => expect(api.list).toHaveBeenLastCalledWith('host-documents', ''));
   });
 
-  it('opens text files in the editor and other files with the host', async () => {
+  it('opens text in the editor, images in the viewer and the rest with the host', async () => {
     const user = userEvent.setup();
     render(<Files />);
     await user.dblClick(await screen.findByText('a.txt'));
     expect(launchApp).toHaveBeenCalledWith('editor', { root: 'nova', path: 'a.txt' });
     await user.dblClick(screen.getByText('pic.png'));
-    expect(api.openExternal).toHaveBeenCalledWith('nova', 'pic.png');
+    expect(launchApp).toHaveBeenCalledWith('viewer', { root: 'nova', path: 'pic.png' });
+    await user.dblClick(screen.getByText('report.pdf'));
+    expect(api.openExternal).toHaveBeenCalledWith('nova', 'report.pdf');
   });
 
   it('shows backend refusals instead of swallowing them', async () => {
@@ -162,5 +168,42 @@ describe('Nova Files', () => {
     screen.getByLabelText('Files').focus();
     await user.keyboard('{Delete}');
     expect(api.trash).toHaveBeenCalledWith('nova', 'a.txt');
+  });
+
+  it('shows linked items under a warning heading and flags linked folders', async () => {
+    const user = userEvent.setup();
+    api.roots.mockResolvedValue([
+      { id: 'nova', label: 'Nova Files', kind: 'nova', path: 'x' },
+      { id: 'link-1', label: 'Thesis', kind: 'link', path: 'C:\\Docs\\Thesis' },
+      { id: 'link-2', label: 'notes.md', kind: 'linkfile', path: 'C:\\Docs\\notes.md' },
+    ]);
+    render(<Files />);
+    await screen.findByText('a.txt');
+    expect(screen.getByText('Linked')).toBeInTheDocument();
+    expect(screen.queryByRole('note')).not.toBeInTheDocument();
+    await user.click(within(screen.getByLabelText('Locations')).getByText('Thesis'));
+    await waitFor(() => expect(api.list).toHaveBeenLastCalledWith('link-1', ''));
+    expect(await screen.findByRole('note')).toHaveTextContent(/original files.*change them/);
+  });
+
+  it('a linked single file opens directly instead of being browsed', async () => {
+    const user = userEvent.setup();
+    api.roots.mockResolvedValue([
+      { id: 'nova', label: 'Nova Files', kind: 'nova', path: 'x' },
+      { id: 'link-2', label: 'notes.md', kind: 'linkfile', path: 'C:\\Docs\\notes.md' },
+    ]);
+    render(<Files />);
+    await screen.findByText('a.txt');
+    await user.click(within(screen.getByLabelText('Locations')).getByText('notes.md'));
+    expect(launchApp).toHaveBeenCalledWith('editor', { root: 'link-2', path: '' });
+    expect(api.list).not.toHaveBeenCalledWith('link-2', '');
+  });
+
+  it('the Import button opens the import dialog', async () => {
+    const user = userEvent.setup();
+    render(<Files />);
+    await screen.findByText('a.txt');
+    await user.click(screen.getByLabelText('Import files or folders'));
+    expect(screen.getByRole('dialog', { name: 'Import files' })).toBeInTheDocument();
   });
 });

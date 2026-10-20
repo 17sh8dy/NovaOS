@@ -1,7 +1,7 @@
 export interface FsRoot {
   id: string;
   label: string;
-  kind: 'nova' | 'host' | 'custom';
+  kind: 'nova' | 'host' | 'custom' | 'link' | 'linkfile';
   path: string;
 }
 
@@ -85,6 +85,38 @@ const TEXT_EXTENSIONS = new Set([
 export function isTextFile(name: string): boolean {
   const i = name.lastIndexOf('.');
   return i > 0 && TEXT_EXTENSIONS.has(name.slice(i + 1).toLowerCase());
+}
+
+const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg']);
+
+export function isImageFile(name: string): boolean {
+  const i = name.lastIndexOf('.');
+  return i > 0 && IMAGE_EXTENSIONS.has(name.slice(i + 1).toLowerCase());
+}
+
+export type Opener = 'editor' | 'viewer' | 'external';
+
+/** Which NovaOS app handles a file. Anything else goes to the host's default app (never executed). */
+export function openerFor(name: string): Opener {
+  if (isTextFile(name)) return 'editor';
+  if (isImageFile(name)) return 'viewer';
+  return 'external';
+}
+
+export const isLinkRoot = (r: Pick<FsRoot, 'kind'>): boolean =>
+  r.kind === 'link' || r.kind === 'linkfile';
+
+export function formatSpeed(bytesPerSecond: number): string {
+  return `${formatSize(Math.max(0, Math.round(bytesPerSecond)))}/s`;
+}
+
+/** "12s", "3m 05s", "1h 02m". */
+export function formatDuration(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${String(s % 60).padStart(2, '0')}s`;
+  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`;
 }
 
 // ---------------------------------------------------------------- navigation history

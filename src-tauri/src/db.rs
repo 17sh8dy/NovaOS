@@ -24,16 +24,46 @@ impl Db {
     fn init(conn: Connection) -> Result<Self, String> {
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
+             PRAGMA foreign_keys = ON;
              CREATE TABLE IF NOT EXISTS kv (
                  key   TEXT PRIMARY KEY NOT NULL,
                  value TEXT NOT NULL,
                  updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-             );",
+             );
+             CREATE TABLE IF NOT EXISTS imports (
+                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                 mode        TEXT NOT NULL,
+                 name        TEXT NOT NULL,
+                 source_path TEXT NOT NULL,
+                 dest_rel    TEXT,
+                 is_dir      INTEGER NOT NULL,
+                 files       INTEGER NOT NULL DEFAULT 0,
+                 bytes       INTEGER NOT NULL DEFAULT 0,
+                 errors      INTEGER NOT NULL DEFAULT 0,
+                 status      TEXT NOT NULL,
+                 created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+             );
+             CREATE TABLE IF NOT EXISTS import_files (
+                 import_id INTEGER NOT NULL REFERENCES imports(id) ON DELETE CASCADE,
+                 rel_path  TEXT NOT NULL,
+                 size      INTEGER NOT NULL,
+                 modified  INTEGER,
+                 PRIMARY KEY (import_id, rel_path)
+             ) WITHOUT ROWID;",
         )
         .map_err(|e| e.to_string())?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
+    }
+
+    /// Run a closure with the connection. Used by the import store for multi-statement work.
+    pub fn with_conn<T>(
+        &self,
+        f: impl FnOnce(&mut Connection) -> rusqlite::Result<T>,
+    ) -> Result<T, String> {
+        let mut conn = self.conn.lock().map_err(|_| "database lock poisoned")?;
+        f(&mut conn).map_err(|e| e.to_string())
     }
 
     pub fn get(&self, key: &str) -> Result<Option<String>, String> {

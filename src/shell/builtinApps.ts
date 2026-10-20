@@ -2,6 +2,7 @@ import {
   Calculator as CalcIcon,
   FileText,
   FolderOpen,
+  Image as ImageIcon,
   NotebookPen,
   Settings as SettingsIcon,
 } from 'lucide-react';
@@ -11,6 +12,7 @@ import { Notes } from '../apps/notes/Notes';
 import { Settings } from '../apps/settings/Settings';
 import { Files } from '../apps/files/Files';
 import { Editor } from '../apps/editor/Editor';
+import { Viewer } from '../apps/viewer/Viewer';
 
 /** Idempotent so hot reload and tests can call it repeatedly. */
 export function registerBuiltinApps(): void {
@@ -29,6 +31,14 @@ export function registerBuiltinApps(): void {
     icon: FileText,
     component: Editor,
     defaultSize: { width: 560, height: 420 },
+    hidden: true,
+  });
+  registerApp({
+    id: 'viewer',
+    title: 'Nova Viewer',
+    icon: ImageIcon,
+    component: Viewer,
+    defaultSize: { width: 640, height: 480 },
     hidden: true,
   });
   registerApp({

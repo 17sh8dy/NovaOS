@@ -5,18 +5,22 @@ import {
   ArrowUp,
   ClipboardPaste,
   Copy,
+  Download,
   File as FileIcon,
   FilePlus,
   Folder,
   FolderPlus,
   HardDrive,
+  Link2,
   Pencil,
   Scissors,
   Trash2,
+  TriangleAlert,
 } from 'lucide-react';
 import { create } from 'zustand';
 import { launchApp } from '../../kernel/launcher';
 import { errorMessage, filesApi } from './filesApi';
+import { ImportDialog } from './ImportDialog';
 import {
   back,
   breadcrumbs,
@@ -26,9 +30,10 @@ import {
   forward,
   formatSize,
   initialHistory,
-  isTextFile,
+  isLinkRoot,
   joinPath,
   navigate,
+  openerFor,
   parentPath,
   type FsEntry,
   type FsRoot,
@@ -63,6 +68,7 @@ export function Files() {
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [prompt, setPrompt] = useState<Prompt>(null);
+  const [importOpen, setImportOpen] = useState(false);
   const clip = useFileClipboard();
   const loadSeq = useRef(0);
 
@@ -115,12 +121,33 @@ export function Files() {
     await refresh();
   };
 
+  /** Text opens in Nova Editor, images in Nova Viewer, the rest in the host's default app. */
+  const openFile = (root: string, path: string, name: string) => {
+    const opener = openerFor(name);
+    if (opener === 'editor') launchApp('editor', { root, path });
+    else if (opener === 'viewer') launchApp('viewer', { root, path });
+    else void act(() => filesApi.openExternal(root, path));
+  };
+
   const open = (entry: FsEntry) => {
     if (!loc) return;
     const path = joinPath(loc.path, entry.name);
     if (entry.is_dir) go({ root: loc.root, path });
-    else if (isTextFile(entry.name)) launchApp('editor', { root: loc.root, path });
-    else void act(() => filesApi.openExternal(loc.root, path));
+    else openFile(loc.root, path, entry.name);
+  };
+
+  /** A linked single file has no folder to browse: selecting it opens the file itself. */
+  const openRoot = (r: FsRoot) => {
+    if (r.kind === 'linkfile') openFile(r.id, '', r.label);
+    else go({ root: r.id, path: '' });
+  };
+
+  const reloadRoots = () => {
+    filesApi
+      .roots()
+      .then(setRoots)
+      .catch(() => undefined);
+    void refresh();
   };
 
   const submitPrompt = async () => {
@@ -175,34 +202,40 @@ export function Files() {
     e.preventDefault();
   };
 
+  const currentRoot = roots.find((r) => r.id === loc?.root);
   const rootLabel = roots.find((r) => r.id === loc?.root)?.label ?? '';
   const crumbs = loc ? breadcrumbs(loc.path) : [];
   const hasSel = selected !== null;
 
   return (
-    <div className="flex h-full text-sm" data-testid="files">
+    <div className="relative flex h-full text-sm" data-testid="files">
       <nav
         aria-label="Locations"
         className="w-40 shrink-0 space-y-0.5 overflow-auto border-r border-white/10 p-2"
       >
-        {roots.map((r) => (
-          <button
-            key={r.id}
-            onClick={() => go({ root: r.id, path: '' })}
-            aria-current={loc?.root === r.id}
-            title={r.kind === 'nova' ? 'NovaOS user folder' : r.path}
-            className={`flex w-full items-center gap-2 truncate rounded-md px-2 py-1.5 text-left text-xs ${
-              loc?.root === r.id ? 'bg-white/15' : 'hover:bg-white/10'
-            }`}
-          >
-            {r.kind === 'host' ? (
-              <HardDrive size={14} />
-            ) : (
-              <Folder size={14} className="text-[var(--accent)]" />
-            )}
-            <span className="truncate">{r.label}</span>
-          </button>
-        ))}
+        {roots
+          .filter((r) => !isLinkRoot(r))
+          .map((r) => (
+            <RootButton key={r.id} r={r} active={loc?.root === r.id} onClick={() => openRoot(r)} />
+          ))}
+        {roots.some(isLinkRoot) && (
+          <>
+            <p
+              className="flex items-center gap-1 px-2 pt-3 pb-1 text-[10px] font-semibold tracking-wider text-amber-300/80 uppercase"
+              title="Linked items are your original files. Changes here affect them."
+            >
+              <TriangleAlert size={10} /> Linked
+            </p>
+            {roots.filter(isLinkRoot).map((r) => (
+              <RootButton
+                key={r.id}
+                r={r}
+                active={loc?.root === r.id}
+                onClick={() => openRoot(r)}
+              />
+            ))}
+          </>
+        )}
       </nav>
 
       <div className="flex min-w-0 flex-1 flex-col">
@@ -252,6 +285,9 @@ export function Files() {
               </li>
             ))}
           </ol>
+          <Tool label="Import files or folders" disabled={!loc} onClick={() => setImportOpen(true)}>
+            <Download size={15} />
+          </Tool>
           <Tool
             label="New folder"
             disabled={!loc}
@@ -298,6 +334,17 @@ export function Files() {
             <Trash2 size={15} />
           </Tool>
         </div>
+
+        {currentRoot && isLinkRoot(currentRoot) && (
+          <div
+            role="note"
+            className="flex items-center gap-2 border-b border-amber-400/30 bg-amber-400/10 px-3 py-1.5 text-xs text-amber-100"
+          >
+            <TriangleAlert size={13} className="shrink-0" />
+            Linked folder: these are your original files. Edits, renames and deletes here change
+            them on your computer.
+          </div>
+        )}
 
         {prompt && (
           <form
@@ -390,7 +437,45 @@ export function Files() {
           {clip.op && ` · ${clip.op === 'copy' ? 'copied' : 'cut'}: ${clip.path.split('/').pop()}`}
         </div>
       </div>
+
+      {importOpen && (
+        <ImportDialog
+          onClose={() => setImportOpen(false)}
+          onChanged={reloadRoots}
+          onShowImports={() => go({ root: 'nova', path: 'Imports' })}
+        />
+      )}
     </div>
+  );
+}
+
+function RootButton(props: { r: FsRoot; active: boolean; onClick: () => void }) {
+  const { r } = props;
+  const linked = isLinkRoot(r);
+  return (
+    <button
+      onClick={props.onClick}
+      aria-current={props.active}
+      title={
+        r.kind === 'nova'
+          ? 'NovaOS user folder'
+          : linked
+            ? `${r.path}\nLinked: changes affect the original`
+            : r.path
+      }
+      className={`flex w-full items-center gap-2 truncate rounded-md px-2 py-1.5 text-left text-xs ${
+        props.active ? 'bg-white/15' : 'hover:bg-white/10'
+      }`}
+    >
+      {linked ? (
+        <Link2 size={14} className="shrink-0 text-amber-300" />
+      ) : r.kind === 'host' ? (
+        <HardDrive size={14} className="shrink-0" />
+      ) : (
+        <Folder size={14} className="shrink-0 text-[var(--accent)]" />
+      )}
+      <span className="truncate">{r.label}</span>
+    </button>
   );
 }
 

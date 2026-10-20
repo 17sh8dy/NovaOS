@@ -15,6 +15,7 @@ export const filesApi = {
     native<string>('fs_move', { root, path, destRoot, destDir }),
   trash: (root: string, path: string) => native<void>('fs_trash', { root, path }),
   readText: (root: string, path: string) => native<string>('fs_read_text', { root, path }),
+  readBinary: (root: string, path: string) => native<ArrayBuffer>('fs_read_binary', { root, path }),
   writeText: (root: string, path: string, text: string) =>
     native<void>('fs_write_text', { root, path, text }),
   openExternal: (root: string, path: string) => native<void>('fs_open_external', { root, path }),

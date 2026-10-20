@@ -3,7 +3,7 @@ name = "novaos"
 version = "0.1.0"
 description = "NovaOS desktop environment"
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.85"
 
 [lib]
 name = "novaos_lib"
@@ -20,6 +20,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 trash = "5"
 opener = "0.7"
 tauri-plugin-dialog = "2"
+fs4 = "0.13"
 
 [profile.release]
 lto = true
