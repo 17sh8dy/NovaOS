@@ -382,7 +382,7 @@ fn copy_tree(ctx: &mut Ctx, src: &Path, dst: &Path, rel: &str, depth: usize) -> 
 
 /// Move a finished staged item into `dest_dir` under a name that does not exist yet. Files use a
 /// hard link first because, unlike rename, it fails instead of replacing an existing file.
-fn place(stage: &Path, dest_dir: &Path, name: &str, is_dir: bool) -> Result<String, String> {
+pub fn place(stage: &Path, dest_dir: &Path, name: &str, is_dir: bool) -> Result<String, String> {
     for _ in 0..100 {
         let dest = unique_dest(dest_dir, name);
         let final_name = dest

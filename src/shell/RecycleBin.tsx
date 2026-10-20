@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react';
 import { Trash2 } from 'lucide-react';
 import { native } from '../native/bridge';
-import { useOpenProps } from '../settings/store';
+import { DesktopIcon, type DesktopIconProps } from './DesktopIcon';
+
+type Shared = Pick<DesktopIconProps, 'iconPx' | 'selected' | 'onSelect' | 'register'>;
 
 /**
  * The Recycle Bin: always on the desktop. Everything deleted in Nova Files goes to the host
  * system's Recycle Bin (never deleted outright), so this opens that bin for review and restore.
  */
-export function RecycleBin({ iconPx }: { iconPx: number }) {
-  const openProps = useOpenProps();
+export function RecycleBin(shared: Shared) {
   const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
@@ -27,16 +28,16 @@ export function RecycleBin({ iconPx }: { iconPx: number }) {
 
   return (
     <>
-      <button
-        {...openProps(open)}
-        onKeyDown={(e) => e.key === 'Enter' && open()}
-        aria-label="Recycle Bin"
+      <DesktopIcon
+        {...shared}
+        id="recycle-bin"
+        label="Recycle Bin"
+        ariaLabel="Recycle Bin"
         title="Recycle Bin: items deleted in Nova Files go here"
-        className="flex w-20 flex-col items-center gap-1 rounded-lg p-2 text-[11px] hover:bg-white/10 focus:bg-white/15 focus:outline-none"
-      >
-        <Trash2 size={iconPx} className="text-white/80" />
-        <span className="text-center leading-tight">Recycle Bin</span>
-      </button>
+        icon={Trash2}
+        iconClass="text-white/80"
+        open={open}
+      />
       {notice && (
         <div
           role="status"

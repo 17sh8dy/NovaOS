@@ -3,14 +3,39 @@ import { MotionConfig } from 'motion/react';
 import { listApps } from '../kernel/appRegistry';
 import { launchApp, setDesktopSize } from '../kernel/launcher';
 import { useWindows, type Size } from '../kernel/windowStore';
-import { CORNER_PX, ICON_PX, WALLPAPERS, accentColor, taskbarHeight } from '../settings/schema';
-import { useOpenProps, useSettings } from '../settings/store';
+import {
+  CORNER_PX,
+  ICON_PX,
+  accentColor,
+  selectionColor,
+  taskbarHeight,
+  wallpaperFile,
+} from '../settings/schema';
+import { useSettings } from '../settings/store';
+import { useWallpaperImage, wallpaperStyle } from '../settings/wallpaper';
+import { DesktopIcon } from './DesktopIcon';
 import { RecycleBin } from './RecycleBin';
 import { isExitChord, useDisplay } from './displayMode';
+import {
+  boxFrom,
+  clampPoint,
+  exceedsThreshold,
+  hitTest,
+  mergeSelection,
+  type Box,
+  type Point,
+} from './selection';
 import { StartMenu } from './StartMenu';
 import { Taskbar } from './Taskbar';
 import { useShell } from './shellStore';
 import { Window } from './Window';
+
+interface DragState {
+  start: Point;
+  base: string[];
+  additive: boolean;
+  active: boolean;
+}
 
 export function Desktop() {
   const layer = useRef<HTMLDivElement>(null);
@@ -21,7 +46,25 @@ export function Desktop() {
   const closeStart = useShell((s) => s.closeStart);
   const { mode, setMode, exitImmersive } = useDisplay();
   const startedImmersive = useRef(false);
-  const openProps = useOpenProps();
+
+  const image = useWallpaperImage(wallpaperFile(appearance.wallpaper));
+
+  // Desktop icon selection (click, Ctrl+click, or drag a box around them).
+  const [selected, setSelected] = useState<string[]>([]);
+  const [box, setBox] = useState<Box | null>(null);
+  const icons = useRef(new Map<string, HTMLElement>());
+  const drag = useRef<DragState | null>(null);
+
+  const register = useCallback((id: string, el: HTMLElement | null) => {
+    if (el) icons.current.set(id, el);
+    else icons.current.delete(id);
+  }, []);
+
+  const select = useCallback((id: string, additive: boolean) => {
+    setSelected((cur) =>
+      additive ? (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]) : [id],
+    );
+  }, []);
 
   useEffect(() => {
     void load();
@@ -82,14 +125,60 @@ export function Desktop() {
 
   const launch = useCallback((appId: string) => void launchApp(appId), []);
 
+  // ---- drag-to-select on empty desktop
+  const onLayerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    // Only the bare desktop starts a selection; icons, windows and the taskbar keep their own clicks.
+    if ((e.target as HTMLElement).closest('button, [role="dialog"], [role="status"]')) return;
+    const additive = e.ctrlKey || e.metaKey;
+    if (!additive) setSelected([]);
+    if (!appearance.selectionEnabled) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    drag.current = {
+      start: { x: e.clientX, y: e.clientY },
+      base: additive ? selected : [],
+      additive,
+      active: false,
+    };
+  };
+
+  const onLayerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const d = drag.current;
+    const area = layer.current?.getBoundingClientRect();
+    if (!d || !area) return;
+    const here: Point = { x: e.clientX, y: e.clientY };
+    if (!d.active && !exceedsThreshold(d.start, here)) return;
+    d.active = true;
+    const bounds: Box = { left: area.left, top: area.top, right: area.right, bottom: area.bottom };
+    const sel = boxFrom(clampPoint(d.start, bounds), clampPoint(here, bounds));
+    setBox({
+      left: sel.left - area.left,
+      top: sel.top - area.top,
+      right: sel.right - area.left,
+      bottom: sel.bottom - area.top,
+    });
+    const rects = new Map<string, Box>();
+    for (const [id, el] of icons.current) {
+      const r = el.getBoundingClientRect();
+      rects.set(id, { left: r.left, top: r.top, right: r.right, bottom: r.bottom });
+    }
+    setSelected(mergeSelection(d.base, hitTest(sel, rects), d.additive));
+  };
+
+  const endDrag = () => {
+    drag.current = null;
+    setBox(null);
+  };
+
   const barHeight = taskbarHeight(desktop.taskbarSize);
   const barOnTop = desktop.taskbarPosition === 'top';
-  const icons = listApps().filter((a) => a.pinned && !desktop.unpinned.includes(a.id));
+  const apps = listApps().filter((a) => a.pinned && !desktop.unpinned.includes(a.id));
   const iconPx = ICON_PX[desktop.iconSize];
 
   const vars = {
-    background: WALLPAPERS[appearance.wallpaper],
+    ...wallpaperStyle(appearance, image),
     '--accent': accentColor(appearance.accent),
+    '--selection': selectionColor(appearance),
     '--surface': `rgb(20 22 34 / ${accessibility.highContrast ? 1 : appearance.windowOpacity})`,
     '--blur': `${appearance.blur}px`,
     '--radius': `${CORNER_PX[appearance.corners]}px`,
@@ -108,29 +197,57 @@ export function Desktop() {
       >
         <div
           ref={layer}
+          data-testid="desktop-layer"
           className="absolute inset-x-0"
           style={barOnTop ? { top: barHeight, bottom: 0 } : { top: 0, bottom: barHeight }}
+          onPointerDown={onLayerDown}
+          onPointerMove={onLayerMove}
+          onPointerUp={endDrag}
+          onPointerCancel={endDrag}
         >
           <div className="absolute top-3 left-3 flex flex-col gap-2" data-testid="desktop-icons">
             {/* The Recycle Bin is part of the desktop itself: it ignores "Show desktop icons" and pinning. */}
-            <RecycleBin iconPx={iconPx} />
+            <RecycleBin
+              iconPx={iconPx}
+              selected={selected.includes('recycle-bin')}
+              onSelect={select}
+              register={register}
+            />
             {desktop.showDesktopIcons &&
-              icons.map((a) => (
-                <button
+              apps.map((a) => (
+                <DesktopIcon
                   key={a.id}
-                  {...openProps(() => launch(a.id))}
-                  onKeyDown={(e) => e.key === 'Enter' && launch(a.id)}
-                  aria-label={`${a.title} shortcut`}
-                  className="flex w-20 flex-col items-center gap-1 rounded-lg p-2 text-[11px] hover:bg-white/10 focus:bg-white/15 focus:outline-none"
-                >
-                  <a.icon size={iconPx} className="text-[var(--accent)]" />
-                  <span className="text-center leading-tight">{a.title.replace('Nova ', '')}</span>
-                </button>
+                  id={a.id}
+                  label={a.title.replace('Nova ', '')}
+                  ariaLabel={`${a.title} shortcut`}
+                  icon={a.icon}
+                  iconPx={iconPx}
+                  selected={selected.includes(a.id)}
+                  onSelect={select}
+                  open={() => launch(a.id)}
+                  register={register}
+                />
               ))}
           </div>
           {Object.values(windows).map((w) => (
             <Window key={w.id} win={w} desktop={size} />
           ))}
+          {box && (
+            <div
+              data-testid="selection-box"
+              aria-hidden="true"
+              className="pointer-events-none absolute"
+              style={{
+                left: box.left,
+                top: box.top,
+                width: box.right - box.left,
+                height: box.bottom - box.top,
+                border: '1px solid var(--selection)',
+                background: `color-mix(in srgb, var(--selection) ${Math.round(appearance.selectionOpacity * 100)}%, transparent)`,
+                zIndex: 99999,
+              }}
+            />
+          )}
         </div>
         <StartMenu launch={launch} />
         <Taskbar launch={launch} />

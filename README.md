@@ -76,3 +76,15 @@ Nova Files → **Import** brings Windows/Linux files and folders in through the 
 - Text opens in Nova Editor, images in Nova Viewer, other files in the host's default app.
   **NovaOS cannot run imported Windows or Linux programs**: `.exe`, `.bat`, `.sh` and similar are
   stored as data and refused by the launcher.
+
+## Custom wallpapers and the selection rectangle
+
+- **Wallpaper → Add wallpaper…** opens the native picker in Rust. The image must really be a
+  PNG/JPG/WebP/GIF/BMP (checked by its bytes, not its extension), at most 30 MB. It is _copied_
+  into `NovaFiles/Pictures/Wallpapers` under a normalized safe name (never overwriting); the
+  original is only read. Settings store `file:<name>`; the image is loaded back through the
+  sandboxed filesystem. If the file is missing or won't decode, the desktop falls back to the
+  default wallpaper. Fit (fill/fit/stretch/tile/center) and dimming are settings. Removing a
+  wallpaper sends it to the Recycle Bin.
+- **Selection rectangle**: drag on the empty desktop to box-select icons (Ctrl adds). Color
+  follows the accent or is custom; fill strength and an on/off switch are in Appearance.

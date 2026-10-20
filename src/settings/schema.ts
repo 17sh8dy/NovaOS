@@ -24,6 +24,24 @@ export const WALLPAPERS = {
 } as const;
 export type WallpaperName = keyof typeof WALLPAPERS;
 
+export type WallpaperFit = 'fill' | 'fit' | 'stretch' | 'tile' | 'center';
+
+/** Where custom wallpapers are stored, inside the Nova Files root. */
+export const WALLPAPER_ROOT = 'nova';
+export const WALLPAPER_DIR = 'Pictures/Wallpapers';
+
+/** The only names a stored wallpaper can have; the Rust side normalizes every upload to this. */
+const WALLPAPER_FILE_RE = /^[A-Za-z0-9_()-][A-Za-z0-9 ._()-]{0,83}\.(png|jpe?g|webp|gif|bmp)$/i;
+export const isWallpaperFileName = (name: unknown): name is string =>
+  typeof name === 'string' && WALLPAPER_FILE_RE.test(name);
+
+/** `file:<name>` is a custom wallpaper; returns the file name, or null for presets/invalid. */
+export function wallpaperFile(wallpaper: string): string | null {
+  if (!wallpaper.startsWith('file:')) return null;
+  const name = wallpaper.slice(5);
+  return isWallpaperFileName(name) ? name : null;
+}
+
 export const TASKBAR_SIZES = { compact: 40, default: 48, large: 58 } as const;
 export type TaskbarSize = keyof typeof TASKBAR_SIZES;
 export type TaskbarPosition = 'bottom' | 'top';
@@ -38,6 +56,8 @@ export const LIMITS = {
   windowOpacity: { min: 0.5, max: 1, step: 0.05 },
   uiScale: { min: 0.85, max: 1.4, step: 0.05 },
   blur: { min: 0, max: 40, step: 2 },
+  wallpaperDim: { min: 0, max: 0.6, step: 0.05 },
+  selectionOpacity: { min: 0.05, max: 0.5, step: 0.05 },
 } as const;
 
 export interface SettingsData {
@@ -53,7 +73,16 @@ export interface SettingsData {
   appearance: {
     /** A named accent, or a custom `#rrggbb`. */
     accent: AccentName | string;
-    wallpaper: WallpaperName;
+    /** A preset name, or `file:<name>` for a custom image. */
+    wallpaper: WallpaperName | string;
+    wallpaperFit: WallpaperFit;
+    /** Darkens the wallpaper so icons stay readable (0 = none). */
+    wallpaperDim: number;
+    /** The drag-to-select box on the desktop. */
+    selectionEnabled: boolean;
+    /** `accent` follows the accent color; otherwise `#rrggbb`. */
+    selectionColor: 'accent' | string;
+    selectionOpacity: number;
     windowOpacity: number;
     blur: number;
     corners: Corners;
@@ -88,6 +117,11 @@ export const DEFAULTS: SettingsData = {
   appearance: {
     accent: 'violet',
     wallpaper: 'aurora',
+    wallpaperFit: 'fill',
+    wallpaperDim: 0,
+    selectionEnabled: true,
+    selectionColor: 'accent',
+    selectionOpacity: 0.2,
     windowOpacity: 0.8,
     blur: 24,
     corners: 'rounded',
@@ -165,10 +199,34 @@ export function sanitize(input: unknown): SettingsData {
         typeof a.accent === 'string' && (a.accent in ACCENTS || isHexColor(a.accent))
           ? a.accent
           : D.appearance.accent,
-      wallpaper: oneOf(
-        a.wallpaper,
-        Object.keys(WALLPAPERS) as WallpaperName[],
-        D.appearance.wallpaper,
+      wallpaper:
+        typeof a.wallpaper === 'string' &&
+        (a.wallpaper in WALLPAPERS || wallpaperFile(a.wallpaper) !== null)
+          ? a.wallpaper
+          : D.appearance.wallpaper,
+      wallpaperFit: oneOf(
+        a.wallpaperFit,
+        ['fill', 'fit', 'stretch', 'tile', 'center'],
+        D.appearance.wallpaperFit,
+      ),
+      wallpaperDim: num(
+        a.wallpaperDim,
+        D.appearance.wallpaperDim,
+        LIMITS.wallpaperDim.min,
+        LIMITS.wallpaperDim.max,
+        LIMITS.wallpaperDim.step,
+      ),
+      selectionEnabled: bool(a.selectionEnabled, D.appearance.selectionEnabled),
+      selectionColor:
+        a.selectionColor === 'accent' || isHexColor(a.selectionColor)
+          ? a.selectionColor
+          : D.appearance.selectionColor,
+      selectionOpacity: num(
+        a.selectionOpacity,
+        D.appearance.selectionOpacity,
+        LIMITS.selectionOpacity.min,
+        LIMITS.selectionOpacity.max,
+        LIMITS.selectionOpacity.step,
       ),
       windowOpacity: num(
         a.windowOpacity,
@@ -240,6 +298,11 @@ export function patchSection<S extends keyof SettingsData>(
   patch: Partial<SettingsData[S]>,
 ): SettingsData {
   return sanitize({ ...data, [section]: { ...data[section], ...patch } });
+}
+
+/** The actual CSS color for the selection box. */
+export function selectionColor(a: SettingsData['appearance']): string {
+  return a.selectionColor === 'accent' ? accentColor(a.accent) : a.selectionColor;
 }
 
 export const taskbarHeight = (size: TaskbarSize): number => TASKBAR_SIZES[size];

@@ -3,6 +3,7 @@ mod import;
 mod import_cmds;
 mod import_store;
 mod vfs;
+mod wallpaper;
 
 use db::Db;
 use import_cmds::ImportState;
@@ -159,6 +160,29 @@ fn fs_write_text(
     vfs.write_text(&root, &path, &text)
 }
 
+/// Pick an image with the native dialog and copy it into NovaOS as a wallpaper. The original is
+/// only read. Returns the stored file name, or None if the dialog was cancelled.
+#[tauri::command]
+async fn wallpaper_add(app: AppHandle) -> Result<Option<String>, String> {
+    let picked = app
+        .dialog()
+        .file()
+        .add_filter("Images", wallpaper::EXTENSIONS)
+        .blocking_pick_file();
+    let Some(picked) = picked else {
+        return Ok(None);
+    };
+    let src = picked.into_path().map_err(|e| e.to_string())?;
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("NovaFiles")
+        .join("Pictures")
+        .join("Wallpapers");
+    wallpaper::add_wallpaper(&src, &dir).map(|w| Some(w.file))
+}
+
 /// Raw bytes for the image viewer, sent as a binary response rather than a JSON number array.
 #[tauri::command]
 fn fs_read_binary(
@@ -205,6 +229,7 @@ fn persist_custom_roots(vfs: &Vfs, db: &Db) -> Result<(), String> {
 fn build_vfs(app: &tauri::App, db: &Db) -> Result<Vfs, Box<dyn std::error::Error>> {
     let paths = app.path();
     let nova_home = paths.app_data_dir()?.join("NovaFiles");
+    std::fs::create_dir_all(nova_home.join("Pictures").join("Wallpapers"))?;
     for sub in [
         "Documents",
         "Pictures",
@@ -275,6 +300,7 @@ pub fn run() {
             kv_set,
             set_fullscreen,
             open_recycle_bin,
+            wallpaper_add,
             fs_roots,
             fs_list,
             fs_mkdir,
