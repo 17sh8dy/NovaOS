@@ -70,6 +70,27 @@ describe('Settings app', () => {
     expect(screen.getByTestId('clock-preview').textContent).toMatch(/^\d{2}:\d{2}:\d{2}$/);
   });
 
+  it('General: the single-click toggle saves, and Settings itself never needs a double click', async () => {
+    const user = userEvent.setup();
+    render(<Settings />);
+    const toggle = screen.getByRole('switch', { name: 'Open with a single click' });
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    await user.click(toggle);
+    expect(data().general.singleClickOpen).toBe(true);
+    // Settings controls and navigation respond to ONE click in both modes.
+    await user.click(
+      within(screen.getByRole('navigation', { name: 'Settings sections' })).getByText('Appearance'),
+    );
+    expect(screen.getByRole('region', { name: 'Appearance' })).toBeInTheDocument();
+    await user.click(screen.getByLabelText('accent teal'));
+    expect(data().appearance.accent).toBe('teal');
+    await user.click(
+      within(screen.getByRole('navigation', { name: 'Settings sections' })).getByText('General'),
+    );
+    await user.click(screen.getByRole('switch', { name: 'Open with a single click' }));
+    expect(data().general.singleClickOpen).toBe(false);
+  });
+
   it('General: Shell Mode is shown but cannot be chosen', () => {
     render(<Settings />);
     expect(screen.getByRole('radio', { name: 'Shell (soon)' })).toBeDisabled();
@@ -151,7 +172,8 @@ describe('settings are applied to the desktop', () => {
         useSettings.getState().set('desktop', { showDesktopIcons: false });
       })
       .then(() => {
-        expect(screen.queryByTestId('desktop-icons')).not.toBeInTheDocument();
+        expect(screen.queryByLabelText('Nova Notes shortcut')).not.toBeInTheDocument();
+        expect(screen.getByLabelText('Recycle Bin')).toBeInTheDocument(); // never hidden
       });
   });
 

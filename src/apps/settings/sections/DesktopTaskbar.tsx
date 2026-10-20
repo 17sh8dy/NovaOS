@@ -49,6 +49,9 @@ export function DesktopTaskbar() {
             onChange={(v) => set('desktop', { showDesktopIcons: v })}
           />
         </Row>
+        <p className="px-4 py-2 text-xs text-white/50">
+          The Recycle Bin is always on the desktop, even when desktop icons are hidden.
+        </p>
         <Row label="Icon size">
           <Segmented<IconSize>
             label="Icon size"

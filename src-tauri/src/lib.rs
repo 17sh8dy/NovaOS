@@ -50,6 +50,33 @@ fn kv_set(db: State<'_, Db>, key: String, value: String) -> Result<(), String> {
     db.set(&key, &value)
 }
 
+/// The program and arguments that open the host's Recycle Bin / Trash. Fixed constants: nothing
+/// from the UI ever reaches a command line.
+fn recycle_bin_command() -> (&'static str, &'static [&'static str]) {
+    #[cfg(windows)]
+    {
+        ("explorer.exe", &["shell:RecycleBinFolder"])
+    }
+    #[cfg(not(windows))]
+    {
+        ("xdg-open", &["trash:///"])
+    }
+}
+
+#[tauri::command]
+fn open_recycle_bin() -> Result<(), String> {
+    let (program, args) = recycle_bin_command();
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .spawn()
+        .map_err(|e| format!("could not open the Recycle Bin: {e}"))?;
+    // Reap the child so it never lingers as a zombie; its exit code is meaningless for explorer.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
 /// Immersive Mode is plain borderless fullscreen: no always-on-top, no input grab, no kiosk lock,
 /// so Alt+Tab, the Windows key and Ctrl+Alt+Del keep working and the user can always leave.
 #[tauri::command]
@@ -247,6 +274,7 @@ pub fn run() {
             kv_get,
             kv_set,
             set_fullscreen,
+            open_recycle_bin,
             fs_roots,
             fs_list,
             fs_mkdir,
@@ -272,4 +300,21 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running NovaOS");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::recycle_bin_command;
+
+    #[test]
+    fn recycle_bin_command_is_a_fixed_known_program() {
+        let (program, args) = recycle_bin_command();
+        #[cfg(windows)]
+        assert_eq!(
+            (program, args),
+            ("explorer.exe", &["shell:RecycleBinFolder"][..])
+        );
+        #[cfg(not(windows))]
+        assert_eq!((program, args), ("xdg-open", &["trash:///"][..]));
+    }
 }

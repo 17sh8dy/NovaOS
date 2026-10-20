@@ -49,6 +49,19 @@ export function General() {
         </p>
       </Group>
 
+      <Group title="Opening items">
+        <Row
+          label="Open with a single click"
+          hint="Open programs, files and folders with one click instead of two. Settings always use a single click."
+        >
+          <Toggle
+            label="Open with a single click"
+            checked={general.singleClickOpen}
+            onChange={(v) => set('general', { singleClickOpen: v })}
+          />
+        </Row>
+      </Group>
+
       <Group title="Clock">
         <Row label="Time format">
           <Segmented

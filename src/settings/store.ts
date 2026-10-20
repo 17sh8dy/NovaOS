@@ -81,3 +81,16 @@ export const useSettings = create<SettingsState>((set, get) => ({
 
   exportJson: () => exportSettings(get().data),
 }));
+
+/**
+ * Props that make an element open something: one click when "Open with a single click" is on,
+ * a double click otherwise. Use only for opening programs, files and folders. Settings controls
+ * and window chrome never use this.
+ */
+export function useOpenProps(): (open: () => void) => {
+  onClick?: () => void;
+  onDoubleClick?: () => void;
+} {
+  const single = useSettings((s) => s.data.general.singleClickOpen);
+  return (open) => (single ? { onClick: open } : { onDoubleClick: open });
+}

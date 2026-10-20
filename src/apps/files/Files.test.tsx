@@ -232,4 +232,26 @@ describe('Nova Files', () => {
     expect(screen.queryByText('2.0 KB')).not.toBeInTheDocument();
     useSettings.getState().set('files', { showSizes: true });
   });
+
+  it('single-click mode: one click opens a folder and a file, in Nova Files', async () => {
+    const user = userEvent.setup();
+    useSettings.getState().set('general', { singleClickOpen: true });
+    render(<Files />);
+    await user.click(await screen.findByText('Docs'));
+    expect(await screen.findByText('inner.md')).toBeInTheDocument();
+    expect(api.list).toHaveBeenLastCalledWith('nova', 'Docs');
+    await user.click(screen.getByText('inner.md'));
+    expect(launchApp).toHaveBeenCalledWith('editor', { root: 'nova', path: 'Docs/inner.md' });
+    useSettings.getState().set('general', { singleClickOpen: false });
+  });
+
+  it('default mode: one click only selects; it takes a double click to open', async () => {
+    const user = userEvent.setup();
+    render(<Files />);
+    await user.click(await screen.findByText('Docs'));
+    expect(api.list).toHaveBeenCalledTimes(1); // still just the first listing
+    expect(screen.getByText('Docs').closest('button')).toHaveAttribute('aria-pressed', 'true');
+    await user.click(screen.getByText('a.txt'));
+    expect(launchApp).not.toHaveBeenCalled();
+  });
 });

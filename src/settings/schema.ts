@@ -47,6 +47,8 @@ export interface SettingsData {
     clockFormat: ClockFormat;
     showSeconds: boolean;
     showDate: boolean;
+    /** Open programs, files and folders with one click instead of two. */
+    singleClickOpen: boolean;
   };
   appearance: {
     /** A named accent, or a custom `#rrggbb`. */
@@ -76,7 +78,13 @@ export interface SettingsData {
 }
 
 export const DEFAULTS: SettingsData = {
-  general: { startInImmersive: false, clockFormat: '12h', showSeconds: false, showDate: true },
+  general: {
+    startInImmersive: false,
+    clockFormat: '12h',
+    showSeconds: false,
+    showDate: true,
+    singleClickOpen: false,
+  },
   appearance: {
     accent: 'violet',
     wallpaper: 'aurora',
@@ -150,6 +158,7 @@ export function sanitize(input: unknown): SettingsData {
       clockFormat: oneOf(g.clockFormat, ['12h', '24h'], D.general.clockFormat),
       showSeconds: bool(g.showSeconds, D.general.showSeconds),
       showDate: bool(g.showDate, D.general.showDate),
+      singleClickOpen: bool(g.singleClickOpen, D.general.singleClickOpen),
     },
     appearance: {
       accent:

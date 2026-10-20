@@ -72,6 +72,7 @@ export function Files() {
   const [importOpen, setImportOpen] = useState(false);
   const [confirmTrash, setConfirmTrash] = useState<string | null>(null);
   const { confirmDelete, showSizes } = useSettings((s) => s.data.files);
+  const singleClick = useSettings((s) => s.data.general.singleClickOpen);
   const clip = useFileClipboard();
   const loadSeq = useRef(0);
 
@@ -438,8 +439,11 @@ export function Files() {
             {entries.map((e) => (
               <li key={e.name}>
                 <button
-                  onClick={() => setSelected(e.name)}
-                  onDoubleClick={() => open(e)}
+                  onClick={() => {
+                    setSelected(e.name);
+                    if (singleClick) open(e);
+                  }}
+                  onDoubleClick={singleClick ? undefined : () => open(e)}
                   aria-pressed={selected === e.name}
                   className={`flex w-full items-center gap-2 px-3 py-1.5 text-left ${
                     selected === e.name ? 'bg-[var(--accent)]/30' : 'hover:bg-white/10'

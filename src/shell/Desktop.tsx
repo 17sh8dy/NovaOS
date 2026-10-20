@@ -4,7 +4,8 @@ import { listApps } from '../kernel/appRegistry';
 import { launchApp, setDesktopSize } from '../kernel/launcher';
 import { useWindows, type Size } from '../kernel/windowStore';
 import { CORNER_PX, ICON_PX, WALLPAPERS, accentColor, taskbarHeight } from '../settings/schema';
-import { useSettings } from '../settings/store';
+import { useOpenProps, useSettings } from '../settings/store';
+import { RecycleBin } from './RecycleBin';
 import { isExitChord, useDisplay } from './displayMode';
 import { StartMenu } from './StartMenu';
 import { Taskbar } from './Taskbar';
@@ -20,6 +21,7 @@ export function Desktop() {
   const closeStart = useShell((s) => s.closeStart);
   const { mode, setMode, exitImmersive } = useDisplay();
   const startedImmersive = useRef(false);
+  const openProps = useOpenProps();
 
   useEffect(() => {
     void load();
@@ -109,12 +111,14 @@ export function Desktop() {
           className="absolute inset-x-0"
           style={barOnTop ? { top: barHeight, bottom: 0 } : { top: 0, bottom: barHeight }}
         >
-          {desktop.showDesktopIcons && (
-            <div className="absolute top-3 left-3 flex flex-col gap-2" data-testid="desktop-icons">
-              {icons.map((a) => (
+          <div className="absolute top-3 left-3 flex flex-col gap-2" data-testid="desktop-icons">
+            {/* The Recycle Bin is part of the desktop itself: it ignores "Show desktop icons" and pinning. */}
+            <RecycleBin iconPx={iconPx} />
+            {desktop.showDesktopIcons &&
+              icons.map((a) => (
                 <button
                   key={a.id}
-                  onDoubleClick={() => launch(a.id)}
+                  {...openProps(() => launch(a.id))}
                   onKeyDown={(e) => e.key === 'Enter' && launch(a.id)}
                   aria-label={`${a.title} shortcut`}
                   className="flex w-20 flex-col items-center gap-1 rounded-lg p-2 text-[11px] hover:bg-white/10 focus:bg-white/15 focus:outline-none"
@@ -123,8 +127,7 @@ export function Desktop() {
                   <span className="text-center leading-tight">{a.title.replace('Nova ', '')}</span>
                 </button>
               ))}
-            </div>
-          )}
+          </div>
           {Object.values(windows).map((w) => (
             <Window key={w.id} win={w} desktop={size} />
           ))}

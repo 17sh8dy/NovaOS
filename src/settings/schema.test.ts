@@ -30,6 +30,13 @@ describe('sanitize', () => {
     expect(out.general).not.toHaveProperty('evil');
   });
 
+  it('single-click open defaults to off and only accepts a real boolean', () => {
+    expect(DEFAULTS.general.singleClickOpen).toBe(false);
+    expect(sanitize({ general: { singleClickOpen: true } }).general.singleClickOpen).toBe(true);
+    for (const bad of ['true', 1, null, {}])
+      expect(sanitize({ general: { singleClickOpen: bad } }).general.singleClickOpen).toBe(false);
+  });
+
   it('rejects bad enums, wrong types and bad colours', () => {
     const out = sanitize({
       general: { clockFormat: '99h', startInImmersive: 'yes' },
