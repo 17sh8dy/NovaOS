@@ -6,11 +6,13 @@ export interface AppManifest {
   id: string;
   title: string;
   icon: LucideIcon;
-  component: ComponentType<{ windowId: string }>;
+  component: ComponentType<{ windowId: string; args?: Record<string, string> }>;
   defaultSize: { width: number; height: number };
   singleton?: boolean;
   /** Pinned to the taskbar and shown on the desktop. */
   pinned?: boolean;
+  /** Opened only by other apps (needs launch args); kept out of the Start menu. */
+  hidden?: boolean;
 }
 
 const apps = new Map<string, AppManifest>();

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getApp, listApps } from '../kernel/appRegistry';
+import { listApps } from '../kernel/appRegistry';
+import { launchApp, setDesktopSize } from '../kernel/launcher';
 import { useWindows, type Size } from '../kernel/windowStore';
 import { isExitChord, useDisplay } from './displayMode';
 import { StartMenu } from './StartMenu';
@@ -12,7 +13,6 @@ export function Desktop() {
   const layer = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState<Size>({ width: 1024, height: 640 });
   const windows = useWindows((s) => s.windows);
-  const open = useWindows((s) => s.open);
   const { accent, wallpaper, load } = useTheme();
   const closeStart = useShell((s) => s.closeStart);
   const { mode, exitImmersive } = useDisplay();
@@ -24,7 +24,11 @@ export function Desktop() {
   useEffect(() => {
     const el = layer.current;
     if (!el) return;
-    const measure = () => setSize({ width: el.clientWidth, height: el.clientHeight });
+    const measure = () => {
+      const next = { width: el.clientWidth, height: el.clientHeight };
+      setSize(next);
+      setDesktopSize(next);
+    };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
@@ -54,20 +58,7 @@ export function Desktop() {
     return () => document.removeEventListener('fullscreenchange', onChange);
   }, []);
 
-  const launch = useCallback(
-    (appId: string) => {
-      const app = getApp(appId);
-      if (!app) return;
-      open(
-        { appId, title: app.title, size: app.defaultSize, singleton: app.singleton },
-        {
-          width: layer.current?.clientWidth ?? size.width,
-          height: layer.current?.clientHeight ?? size.height,
-        },
-      );
-    },
-    [open, size],
-  );
+  const launch = useCallback((appId: string) => void launchApp(appId), []);
 
   return (
     <div

@@ -14,6 +14,8 @@ export interface NovaWindow {
   rect: Rect;
   minimized: boolean;
   maximized: boolean;
+  /** Launch arguments, e.g. which file an editor should open. */
+  args?: Record<string, string>;
   /** Higher = nearer the front. Unique per window. */
   z: number;
 }
@@ -24,6 +26,7 @@ export interface OpenOptions {
   size: { width: number; height: number };
   /** Reuse (and focus) an existing window of this app instead of opening another. */
   singleton?: boolean;
+  args?: Record<string, string>;
 }
 
 export interface Size {
@@ -93,6 +96,7 @@ export const useWindows = create<WindowState>((set, get) => ({
         rect: { x, y, width, height },
         minimized: false,
         maximized: false,
+        args: opts.args,
         z: s.nextZ,
       };
       return {

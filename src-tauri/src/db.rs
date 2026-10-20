@@ -31,15 +31,19 @@ impl Db {
              );",
         )
         .map_err(|e| e.to_string())?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     pub fn get(&self, key: &str) -> Result<Option<String>, String> {
         validate_key(key)?;
         let conn = self.conn.lock().map_err(|_| "database lock poisoned")?;
-        conn.query_row("SELECT value FROM kv WHERE key = ?1", params![key], |r| r.get(0))
-            .optional()
-            .map_err(|e| e.to_string())
+        conn.query_row("SELECT value FROM kv WHERE key = ?1", params![key], |r| {
+            r.get(0)
+        })
+        .optional()
+        .map_err(|e| e.to_string())
     }
 
     pub fn set(&self, key: &str, value: &str) -> Result<(), String> {
@@ -88,7 +92,13 @@ mod tests {
     #[test]
     fn rejects_bad_keys() {
         let db = Db::open_in_memory().unwrap();
-        for k in ["", "has space", "a/b", "x'; DROP TABLE kv;--", &"k".repeat(129)] {
+        for k in [
+            "",
+            "has space",
+            "a/b",
+            "x'; DROP TABLE kv;--",
+            &"k".repeat(129),
+        ] {
             assert!(db.set(k, "v").is_err(), "{k:?} should be rejected");
             assert!(db.get(k).is_err());
         }

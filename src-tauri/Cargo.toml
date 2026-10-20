@@ -17,9 +17,15 @@ tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
+trash = "5"
+opener = "0.7"
+tauri-plugin-dialog = "2"
 
 [profile.release]
 lto = true
 codegen-units = 1
 strip = true
 panic = "abort"
+
+[dev-dependencies]
+tempfile = "3"

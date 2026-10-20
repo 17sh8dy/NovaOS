@@ -11,7 +11,9 @@ export function StartMenu({ launch }: { launch: (appId: string) => void }) {
   const [query, setQuery] = useState('');
   if (!startOpen) return null;
 
-  const apps = listApps().filter((a) => a.title.toLowerCase().includes(query.trim().toLowerCase()));
+  const apps = listApps().filter(
+    (a) => !a.hidden && a.title.toLowerCase().includes(query.trim().toLowerCase()),
+  );
   const run = (id: string) => {
     launch(id);
     closeStart();

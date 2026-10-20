@@ -133,7 +133,7 @@ export function Window({ win, desktop }: { win: NovaWindow; desktop: Size }) {
         </div>
       </header>
       <div className="min-h-0 flex-1 overflow-hidden">
-        <Body windowId={win.id} />
+        <Body windowId={win.id} args={win.args} />
       </div>
       {!win.maximized &&
         EDGES.map((edge) => (
