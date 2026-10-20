@@ -24,3 +24,31 @@ input {
 button {
   cursor: default;
 }
+
+/* Frosted glass whose strength is a user setting (0 = no blur). */
+.glass {
+  backdrop-filter: blur(var(--blur, 24px));
+  -webkit-backdrop-filter: blur(var(--blur, 24px));
+}
+
+/* High contrast: opaque surfaces and clearly visible edges. */
+[data-contrast='high'] {
+  --surface: rgb(8 9 16);
+}
+[data-contrast='high'] .border-white\/10,
+[data-contrast='high'] .border-white\/15 {
+  border-color: rgb(255 255 255 / 0.55);
+}
+[data-contrast='high'] .text-white\/50,
+[data-contrast='high'] .text-white\/40,
+[data-contrast='high'] .text-white\/60 {
+  color: rgb(255 255 255 / 0.9);
+}
+
+/* Reduced motion: no transitions or animations anywhere. */
+[data-motion='reduced'] *,
+[data-motion='reduced'] *::before,
+[data-motion='reduced'] *::after {
+  transition-duration: 0s !important;
+  animation-duration: 0s !important;
+}

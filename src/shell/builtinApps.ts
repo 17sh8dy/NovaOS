@@ -46,7 +46,7 @@ export function registerBuiltinApps(): void {
     title: 'Nova Settings',
     icon: SettingsIcon,
     component: Settings,
-    defaultSize: { width: 520, height: 520 },
+    defaultSize: { width: 860, height: 580 },
     singleton: true,
     pinned: true,
   });

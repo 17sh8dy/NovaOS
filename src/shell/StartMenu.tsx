@@ -3,12 +3,14 @@ import { Maximize2, Minimize2, Search } from 'lucide-react';
 import { listApps } from '../kernel/appRegistry';
 import { useDisplay } from './displayMode';
 import { useShell } from './shellStore';
-import { TASKBAR_HEIGHT } from './Taskbar';
+import { taskbarHeight } from '../settings/schema';
+import { useSettings } from '../settings/store';
 
 export function StartMenu({ launch }: { launch: (appId: string) => void }) {
   const { startOpen, closeStart } = useShell();
   const { mode, setMode, exitImmersive } = useDisplay();
   const [query, setQuery] = useState('');
+  const { taskbarPosition, taskbarSize } = useSettings((s) => s.data.desktop);
   if (!startOpen) return null;
 
   const apps = listApps().filter(
@@ -24,9 +26,13 @@ export function StartMenu({ launch }: { launch: (appId: string) => void }) {
     <div
       role="menu"
       aria-label="Start menu"
-      style={{ bottom: TASKBAR_HEIGHT + 8 }}
+      style={
+        taskbarPosition === 'top'
+          ? { top: taskbarHeight(taskbarSize) + 8 }
+          : { bottom: taskbarHeight(taskbarSize) + 8 }
+      }
       onPointerDown={(e) => e.stopPropagation()}
-      className="absolute left-2 z-[100001] w-80 rounded-2xl border border-white/10 bg-[var(--surface)] p-3 shadow-2xl backdrop-blur-2xl"
+      className="absolute left-2 z-[100001] w-80 glass rounded-[calc(var(--radius)+4px)] border border-white/10 bg-[var(--surface)] p-3 shadow-2xl"
     >
       <label className="mb-3 flex items-center gap-2 rounded-lg bg-black/30 px-3 py-2">
         <Search size={14} className="text-white/50" />

@@ -1,188 +1,149 @@
-import { useEffect, useState } from 'react';
-import { isTauri, native, type PlatformInfo } from '../../native/bridge';
-import { errorMessage, filesApi } from '../files/filesApi';
-import type { FsRoot } from '../files/filesModel';
-import { useDisplay } from '../../shell/displayMode';
+import { useMemo, useState, type ComponentType } from 'react';
 import {
-  ACCENTS,
-  WALLPAPERS,
-  useTheme,
-  type AccentName,
-  type WallpaperName,
-} from '../../shell/theme';
+  Accessibility as AccessibilityIcon,
+  Database,
+  FolderCog,
+  Info,
+  Keyboard,
+  Monitor,
+  Palette,
+  Search,
+  ShieldCheck,
+  SlidersHorizontal,
+  type LucideIcon,
+} from 'lucide-react';
+import { About } from './sections/About';
+import { Accessibility } from './sections/Accessibility';
+import { Appearance } from './sections/Appearance';
+import { DataBackup } from './sections/DataBackup';
+import { DesktopTaskbar } from './sections/DesktopTaskbar';
+import { FilesStorage } from './sections/FilesStorage';
+import { General } from './sections/General';
+import { Privacy } from './sections/Privacy';
+import { Shortcuts } from './sections/Shortcuts';
 
-export function Settings() {
-  const { accent, wallpaper, setAccent, setWallpaper } = useTheme();
-  const { mode, setMode, error } = useDisplay();
-  const [info, setInfo] = useState<PlatformInfo | null>(null);
-  const [custom, setCustom] = useState<FsRoot[]>([]);
-  const [fileError, setFileError] = useState<string | null>(null);
-
-  const loadRoots = () =>
-    filesApi
-      .roots()
-      .then((r) => setCustom(r.filter((x) => x.kind === 'custom')))
-      .catch(() => undefined);
-
-  useEffect(() => {
-    if (isTauri())
-      void native<PlatformInfo>('platform_info')
-        .then(setInfo)
-        .catch(() => undefined);
-    if (isTauri()) void loadRoots();
-  }, []);
-
-  const addFolder = async () => {
-    setFileError(null);
-    try {
-      await filesApi.addRoot();
-      await loadRoots();
-    } catch (e) {
-      setFileError(errorMessage(e));
-    }
-  };
-  const removeFolder = async (id: string) => {
-    try {
-      await filesApi.removeRoot(id);
-      await loadRoots();
-    } catch (e) {
-      setFileError(errorMessage(e));
-    }
-  };
-
-  return (
-    <div className="h-full space-y-5 overflow-auto p-4 text-sm" data-testid="settings">
-      <section>
-        <h2 className="mb-2 text-xs font-semibold tracking-wider text-white/50 uppercase">
-          Display mode
-        </h2>
-        <div className="flex gap-2">
-          <ModeButton active={mode === 'windowed'} onClick={() => void setMode('windowed')}>
-            Windowed
-          </ModeButton>
-          <ModeButton active={mode === 'immersive'} onClick={() => void setMode('immersive')}>
-            Immersive
-          </ModeButton>
-          <ModeButton disabled title="Shell Mode is not available in this release">
-            Shell (soon)
-          </ModeButton>
-        </div>
-        <p className="mt-2 text-xs text-white/50">
-          Leave Immersive at any time with{' '}
-          <kbd className="rounded bg-white/10 px-1">Ctrl+Alt+Q</kbd>, the taskbar power button, or
-          the Start menu.
-        </p>
-        {error && <p className="mt-1 text-xs text-rose-400">{error}</p>}
-      </section>
-
-      <section>
-        <h2 className="mb-2 text-xs font-semibold tracking-wider text-white/50 uppercase">
-          Accent
-        </h2>
-        <div className="flex gap-2">
-          {(Object.keys(ACCENTS) as AccentName[]).map((name) => (
-            <button
-              key={name}
-              aria-label={`accent ${name}`}
-              aria-pressed={accent === name}
-              onClick={() => setAccent(name)}
-              style={{ background: ACCENTS[name] }}
-              className={`h-7 w-7 rounded-full ring-offset-2 ring-offset-transparent ${
-                accent === name ? 'ring-2 ring-white' : ''
-              }`}
-            />
-          ))}
-        </div>
-      </section>
-
-      <section>
-        <h2 className="mb-2 text-xs font-semibold tracking-wider text-white/50 uppercase">
-          Wallpaper
-        </h2>
-        <div className="flex gap-2">
-          {(Object.keys(WALLPAPERS) as WallpaperName[]).map((name) => (
-            <button
-              key={name}
-              aria-label={`wallpaper ${name}`}
-              aria-pressed={wallpaper === name}
-              onClick={() => setWallpaper(name)}
-              style={{ background: WALLPAPERS[name] }}
-              className={`h-12 w-20 rounded-md ${wallpaper === name ? 'ring-2 ring-white' : 'ring-1 ring-white/20'}`}
-            />
-          ))}
-        </div>
-      </section>
-
-      {isTauri() && (
-        <section>
-          <h2 className="mb-2 text-xs font-semibold tracking-wider text-white/50 uppercase">
-            File access
-          </h2>
-          <p className="mb-2 text-xs text-white/50">
-            Nova Files can reach your Nova folder, Documents, Pictures, Downloads and Desktop, plus
-            any folder you add here. Drives and system folders are never allowed.
-          </p>
-          <ul className="mb-2 space-y-1">
-            {custom.map((r) => (
-              <li
-                key={r.id}
-                className="flex items-center gap-2 rounded-md bg-white/5 px-2 py-1 text-xs"
-              >
-                <span className="flex-1 truncate" title={r.path}>
-                  {r.label} <span className="text-white/40">{r.path}</span>
-                </span>
-                <button
-                  aria-label={`Remove ${r.label}`}
-                  onClick={() => void removeFolder(r.id)}
-                  className="rounded px-2 hover:bg-white/15"
-                >
-                  Remove
-                </button>
-              </li>
-            ))}
-          </ul>
-          <button
-            onClick={() => void addFolder()}
-            className="rounded-md bg-white/10 px-3 py-1.5 hover:bg-white/20"
-          >
-            Add folder…
-          </button>
-          {fileError && <p className="mt-1 text-xs text-rose-400">{fileError}</p>}
-        </section>
-      )}
-
-      <section>
-        <h2 className="mb-2 text-xs font-semibold tracking-wider text-white/50 uppercase">About</h2>
-        <p>NovaOS 0.1.0 — a desktop environment running as an application.</p>
-        <p className="text-white/50">
-          {info ? `${info.os} ${info.arch} · ${info.version}` : 'Running in browser preview'}
-        </p>
-        <p className="mt-1 text-xs text-white/40">
-          NovaOS is not a kernel or a replacement for Windows; it runs on top of it.
-        </p>
-      </section>
-    </div>
-  );
+export interface SectionDef {
+  id: string;
+  title: string;
+  icon: LucideIcon;
+  /** Extra words the search box matches, so "blur" finds Appearance. */
+  keywords: string;
+  component: ComponentType;
 }
 
-function ModeButton(props: {
-  active?: boolean;
-  disabled?: boolean;
-  title?: string;
-  onClick?: () => void;
-  children: React.ReactNode;
-}) {
+/** Adding a settings section is one entry here plus its component. */
+export const SECTIONS: SectionDef[] = [
+  {
+    id: 'general',
+    title: 'General',
+    icon: SlidersHorizontal,
+    keywords: 'start immersive windowed fullscreen display clock time 24 hour date seconds',
+    component: General,
+  },
+  {
+    id: 'appearance',
+    title: 'Appearance',
+    icon: Palette,
+    keywords:
+      'accent color wallpaper background theme opacity transparency blur glass corners rounded',
+    component: Appearance,
+  },
+  {
+    id: 'desktop',
+    title: 'Desktop & Taskbar',
+    icon: Monitor,
+    keywords: 'taskbar position top bottom size icons pinned apps shortcuts',
+    component: DesktopTaskbar,
+  },
+  {
+    id: 'files',
+    title: 'Files & Storage',
+    icon: FolderCog,
+    keywords: 'folders access delete confirm recycle sizes data location add folder',
+    component: FilesStorage,
+  },
+  {
+    id: 'accessibility',
+    title: 'Accessibility',
+    icon: AccessibilityIcon,
+    keywords: 'text size scale zoom contrast motion animation reduce',
+    component: Accessibility,
+  },
+  {
+    id: 'shortcuts',
+    title: 'Keyboard shortcuts',
+    icon: Keyboard,
+    keywords: 'keys hotkeys ctrl alt',
+    component: Shortcuts,
+  },
+  {
+    id: 'privacy',
+    title: 'Privacy & Security',
+    icon: ShieldCheck,
+    keywords: 'permissions programs executables network linked unlink protections',
+    component: Privacy,
+  },
+  {
+    id: 'data',
+    title: 'Data & Backup',
+    icon: Database,
+    keywords: 'export import backup reset restore json',
+    component: DataBackup,
+  },
+  { id: 'about', title: 'About', icon: Info, keywords: 'version platform build', component: About },
+];
+
+export function Settings() {
+  const [active, setActive] = useState(SECTIONS[0].id);
+  const [query, setQuery] = useState('');
+
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return SECTIONS;
+    return SECTIONS.filter((s) => `${s.title} ${s.keywords}`.toLowerCase().includes(q));
+  }, [query]);
+
+  // If a search hides the open section, show the first match instead of an empty pane.
+  const current = visible.find((s) => s.id === active) ?? visible[0];
+  const Body = current?.component;
+
   return (
-    <button
-      disabled={props.disabled}
-      title={props.title}
-      onClick={props.onClick}
-      aria-pressed={props.active}
-      className={`rounded-md px-3 py-1.5 ${
-        props.active ? 'bg-[var(--accent)] text-white' : 'bg-white/10 hover:bg-white/20'
-      } disabled:cursor-not-allowed disabled:opacity-40`}
-    >
-      {props.children}
-    </button>
+    <div className="flex h-full text-sm" data-testid="settings">
+      <nav
+        aria-label="Settings sections"
+        className="flex w-52 shrink-0 flex-col gap-1 overflow-auto border-r border-white/10 p-2"
+      >
+        <label className="mb-1 flex items-center gap-2 rounded-lg bg-black/30 px-2.5 py-1.5">
+          <Search size={13} className="text-white/50" />
+          <input
+            aria-label="Search settings"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search settings"
+            className="w-full bg-transparent text-xs outline-none"
+          />
+        </label>
+        {visible.map((s) => (
+          <button
+            key={s.id}
+            onClick={() => setActive(s.id)}
+            aria-current={current?.id === s.id ? 'page' : undefined}
+            className={`flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs ${
+              current?.id === s.id ? 'bg-white/15' : 'hover:bg-white/10'
+            }`}
+          >
+            <s.icon
+              size={15}
+              className={current?.id === s.id ? 'text-[var(--accent)]' : 'text-white/60'}
+            />
+            {s.title}
+          </button>
+        ))}
+        {visible.length === 0 && (
+          <p className="px-2 py-3 text-xs text-white/50">No settings match.</p>
+        )}
+      </nav>
+      <main className="min-w-0 flex-1 overflow-auto p-5">{Body ? <Body /> : null}</main>
+    </div>
   );
 }

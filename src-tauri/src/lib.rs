@@ -19,13 +19,20 @@ struct PlatformInfo {
     os: &'static str,
     arch: &'static str,
     version: &'static str,
+    /// Where NovaOS keeps its database and the Nova Files folder.
+    data_dir: String,
     /// NovaOS is an application, not a system shell. Flip this only when Shell Mode truly exists.
     shell_mode_available: bool,
 }
 
 #[tauri::command]
-fn platform_info() -> PlatformInfo {
+fn platform_info(app: AppHandle) -> PlatformInfo {
     PlatformInfo {
+        data_dir: app
+            .path()
+            .app_data_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default(),
         os: std::env::consts::OS,
         arch: std::env::consts::ARCH,
         version: env!("CARGO_PKG_VERSION"),

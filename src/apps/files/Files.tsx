@@ -20,6 +20,7 @@ import {
 import { create } from 'zustand';
 import { launchApp } from '../../kernel/launcher';
 import { errorMessage, filesApi } from './filesApi';
+import { useSettings } from '../../settings/store';
 import { ImportDialog } from './ImportDialog';
 import {
   back,
@@ -69,6 +70,8 @@ export function Files() {
   const [error, setError] = useState<string | null>(null);
   const [prompt, setPrompt] = useState<Prompt>(null);
   const [importOpen, setImportOpen] = useState(false);
+  const [confirmTrash, setConfirmTrash] = useState<string | null>(null);
+  const { confirmDelete, showSizes } = useSettings((s) => s.data.files);
   const clip = useFileClipboard();
   const loadSeq = useRef(0);
 
@@ -165,11 +168,18 @@ export function Files() {
     }
   };
 
+  const trashNow = (name: string) => {
+    if (!loc) return;
+    setSelected(null);
+    setConfirmTrash(null);
+    void act(() => filesApi.trash(loc.root, joinPath(loc.path, name)));
+  };
+
+  /** Asks first when "Confirm before deleting" is on; deleted items always go to the Recycle Bin. */
   const doTrash = () => {
     if (!loc || !selected) return;
-    const name = selected;
-    setSelected(null);
-    void act(() => filesApi.trash(loc.root, joinPath(loc.path, name)));
+    if (confirmDelete) setConfirmTrash(selected);
+    else trashNow(selected);
   };
 
   const doPaste = () => {
@@ -381,6 +391,28 @@ export function Files() {
           </form>
         )}
 
+        {confirmTrash && (
+          <div
+            role="alertdialog"
+            aria-label="Confirm delete"
+            className="flex items-center gap-2 border-b border-white/10 bg-rose-500/10 p-2 text-xs"
+          >
+            <span className="flex-1 truncate">Move “{confirmTrash}” to the Recycle Bin?</span>
+            <button
+              onClick={() => trashNow(confirmTrash)}
+              className="rounded-md bg-rose-500/80 px-3 py-1 text-white hover:bg-rose-500"
+            >
+              Delete
+            </button>
+            <button
+              onClick={() => setConfirmTrash(null)}
+              className="rounded-md bg-white/10 px-3 py-1 hover:bg-white/20"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+
         {error && (
           <div
             role="alert"
@@ -421,7 +453,7 @@ export function Files() {
                   <span className="flex-1 truncate">{e.name}</span>
                   {e.is_symlink && <span className="text-[10px] text-white/40">link</span>}
                   <span className="w-16 text-right text-xs text-white/40">
-                    {e.is_dir ? '' : formatSize(e.size)}
+                    {e.is_dir || !showSizes ? '' : formatSize(e.size)}
                   </span>
                 </button>
               </li>

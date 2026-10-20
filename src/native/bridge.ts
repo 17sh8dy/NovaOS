@@ -17,6 +17,7 @@ export interface PlatformInfo {
   os: string;
   arch: string;
   version: string;
+  data_dir: string;
   /** Always false for now: NovaOS is an application, not a kernel or system shell. */
   shell_mode_available: boolean;
 }

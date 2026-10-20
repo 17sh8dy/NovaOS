@@ -99,8 +99,8 @@ export function Window({ win, desktop }: { win: NovaWindow; desktop: Size }) {
         visibility: win.minimized ? 'hidden' : 'visible',
       }}
       onPointerDown={() => focus(win.id)}
-      className={`absolute flex flex-col overflow-hidden border bg-[var(--surface)] backdrop-blur-xl ${
-        win.maximized ? 'rounded-none' : 'rounded-xl shadow-2xl'
+      className={`absolute flex flex-col overflow-hidden border bg-[var(--surface)] glass ${
+        win.maximized ? 'rounded-none' : 'rounded-[var(--radius)] shadow-2xl'
       } ${active ? 'border-[var(--accent)]/60' : 'border-white/10'}`}
     >
       <header

@@ -23,6 +23,7 @@ vi.mock('./importApi', () => ({
 }));
 
 import { Files, useFileClipboard } from './Files';
+import { useSettings } from '../../settings/store';
 import { filesApi } from './filesApi';
 import { launchApp } from '../../kernel/launcher';
 
@@ -205,5 +206,30 @@ describe('Nova Files', () => {
     await screen.findByText('a.txt');
     await user.click(screen.getByLabelText('Import files or folders'));
     expect(screen.getByRole('dialog', { name: 'Import files' })).toBeInTheDocument();
+  });
+
+  it('asks before deleting when "Confirm before deleting" is on, and Cancel keeps the file', async () => {
+    const user = userEvent.setup();
+    useSettings.getState().set('files', { confirmDelete: true });
+    render(<Files />);
+    await user.click(await screen.findByText('a.txt'));
+    await user.click(screen.getByLabelText('Delete'));
+    expect(api.trash).not.toHaveBeenCalled();
+    const dialog = screen.getByRole('alertdialog', { name: 'Confirm delete' });
+    expect(dialog).toHaveTextContent('a.txt');
+    await user.click(within(dialog).getByText('Cancel'));
+    expect(api.trash).not.toHaveBeenCalled();
+    await user.click(screen.getByLabelText('Delete'));
+    await user.click(within(screen.getByRole('alertdialog')).getByText('Delete'));
+    expect(api.trash).toHaveBeenCalledWith('nova', 'a.txt');
+    useSettings.getState().set('files', { confirmDelete: false });
+  });
+
+  it('hides file sizes when "Show file sizes" is off', async () => {
+    useSettings.getState().set('files', { showSizes: false });
+    render(<Files />);
+    await screen.findByText('pic.png');
+    expect(screen.queryByText('2.0 KB')).not.toBeInTheDocument();
+    useSettings.getState().set('files', { showSizes: true });
   });
 });
