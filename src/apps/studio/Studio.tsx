@@ -98,7 +98,8 @@ function Home({ session, go }: { session: StudioSession; go: (p: PageId) => void
             key={s.id}
             onClick={() => go(s.id)}
             aria-label={`Open ${s.title} Studio`}
-            className="flex flex-col items-start gap-1.5 rounded-xl border border-white/10 bg-white/[0.03] p-3 text-left hover:bg-white/10"
+            data-bit="bento"
+            className="relative flex flex-col items-start gap-1.5 rounded-xl border border-white/10 bg-white/[0.03] p-3 text-left hover:bg-white/10"
           >
             <s.icon size={20} className="text-[var(--accent)]" />
             <span className="text-sm font-medium">{s.title}</span>

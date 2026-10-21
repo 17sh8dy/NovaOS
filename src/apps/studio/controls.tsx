@@ -7,6 +7,7 @@ import {
   isHexColor,
   type AccentName,
   type CursorEngine,
+  type CursorHotspot,
   type CursorStyle,
   type FontChoice,
   type SettingsData,
@@ -14,6 +15,9 @@ import {
 } from '../../settings/schema';
 import { playSound, type SoundEvent } from '../../settings/sounds';
 import { Button, Segmented, Toggle } from '../settings/ui';
+import { BITS_CATALOG, allBitsOff, countBitsOn } from '../../settings/bits';
+import { BitCard } from './BitCard';
+import { CursorFilePicker } from './CursorFilePicker';
 import { PinnedList } from './PinnedList';
 import { AdvSlider, ColorPick } from './studioUi';
 import type { StudioId } from './studios';
@@ -58,7 +62,7 @@ const SOUND_TESTS: [SoundEvent, string][] = [
   ['click', 'Click'],
 ];
 
-export const CONTROLS: ControlDef[] = [
+const BASE_CONTROLS: ControlDef[] = [
   // ------------------------------------------------------------------ Themes
   {
     id: 'themes.accent',
@@ -719,6 +723,53 @@ export const CONTROLS: ControlDef[] = [
     ),
   },
   {
+    id: 'cursor.custom',
+    studio: 'cursor',
+    group: 'Your own cursor',
+    title: 'Custom cursor file',
+    hint: 'Use a cursor you downloaded. NovaOS draws it for you, even in Immersive Mode.',
+    keywords:
+      'cursor custom file add own download cur ani png gif animated pointer rw-designer custom-cursor cursors-4u',
+    stacked: true,
+    render: ({ data, set }) => (
+      <CursorFilePicker cursor={data.cursor} onChange={(patch) => set('cursor', patch)} />
+    ),
+  },
+  {
+    id: 'cursor.customhotspot',
+    studio: 'cursor',
+    group: 'Your own cursor',
+    title: 'Where it points',
+    hint: 'For PNG and GIF cursors. .cur and .ani files already say where they point.',
+    keywords: 'cursor custom hotspot tip point click center corner',
+    render: ({ data, set }) => (
+      <Segmented<CursorHotspot>
+        label="Cursor hotspot"
+        value={data.cursor.customHotspot}
+        onChange={(v) => set('cursor', { customHotspot: v })}
+        options={[
+          { value: 'topleft', label: 'Top-left corner' },
+          { value: 'center', label: 'Center' },
+        ]}
+      />
+    ),
+  },
+  {
+    id: 'cursor.customeverywhere',
+    studio: 'cursor',
+    group: 'Your own cursor',
+    title: 'Use it everywhere',
+    hint: 'Off: only the normal arrow. On: also over links, text and window edges.',
+    keywords: 'cursor custom everywhere links text hand beam resize',
+    render: ({ data, set }) => (
+      <Toggle
+        label="Use custom cursor everywhere"
+        checked={data.cursor.customEverywhere}
+        onChange={(v) => set('cursor', { customEverywhere: v })}
+      />
+    ),
+  },
+  {
     id: 'cursor.ripple',
     studio: 'cursor',
     group: 'Click effects',
@@ -980,6 +1031,62 @@ export const CONTROLS: ControlDef[] = [
     ),
   },
 ];
+
+/** `clickSpark` → `click-spark`: control ids are lowercase letters, digits, dots and dashes. */
+const kebab = (id: string) => id.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
+
+/** React Bits: one overview control, then one card per effect, all generated from the catalog. */
+const BIT_CONTROLS: ControlDef[] = [
+  {
+    id: 'bits.overview',
+    studio: 'bits',
+    group: 'Overview',
+    title: 'Effects',
+    hint: 'All off by default. Reduce motion and High contrast pause the ones they would bother.',
+    keywords: 'react bits effects overview turn all off disable reset',
+    render: ({ data, set }) => {
+      const on = countBitsOn(data.bits);
+      const paused = data.accessibility.reduceMotion || data.accessibility.highContrast;
+      return (
+        <span className="flex flex-col items-end gap-1.5">
+          <span className="flex items-center gap-3">
+            <span className="text-xs text-white/60" role="status">
+              {on === 0 ? 'None on' : `${on} on`}
+            </span>
+            <Button
+              label="Turn all effects off"
+              disabled={on === 0}
+              onClick={() => set('bits', allBitsOff(data.bits))}
+            >
+              Turn all off
+            </Button>
+          </span>
+          {on > 0 && paused && (
+            <span className="max-w-64 text-right text-[11px] text-amber-300">
+              {data.accessibility.reduceMotion
+                ? 'Reduce motion is on, so moving effects are paused.'
+                : 'High contrast is on, so effects that dim text are paused.'}
+            </span>
+          )}
+        </span>
+      );
+    },
+  },
+  ...BITS_CATALOG.map((def): ControlDef => ({
+    id: `bits.${kebab(def.id)}`,
+    studio: 'bits',
+    group: def.category,
+    title: def.title,
+    hint: def.blurb,
+    keywords: `react bits effect ${def.keywords}`,
+    stacked: true,
+    render: ({ data, set, advanced }) => (
+      <BitCard def={def} data={data} set={set} advanced={advanced} />
+    ),
+  })),
+];
+
+export const CONTROLS: ControlDef[] = [...BASE_CONTROLS, ...BIT_CONTROLS];
 
 export const controlById = (id: string): ControlDef | undefined =>
   CONTROLS.find((c) => c.id === id);

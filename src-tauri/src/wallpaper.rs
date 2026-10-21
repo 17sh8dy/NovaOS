@@ -35,6 +35,11 @@ fn matches_magic(ext: &str, head: &[u8]) -> bool {
 /// Letters, digits, space, dot, dash, underscore and parentheses only; everything else becomes `_`.
 /// Keeps stored names trivially safe to put in settings, URLs and paths.
 pub fn safe_name(stem: &str, ext: &str) -> String {
+    safe_name_or(stem, ext, "wallpaper")
+}
+
+/// `safe_name` with a caller-chosen fallback for stems that clean down to nothing.
+pub fn safe_name_or(stem: &str, ext: &str, fallback: &str) -> String {
     let cleaned: String = stem
         .chars()
         .map(|c| {
@@ -48,7 +53,7 @@ pub fn safe_name(stem: &str, ext: &str) -> String {
     let trimmed = cleaned.trim_matches(|c: char| c == ' ' || c == '.');
     let base: String = trimmed.chars().take(MAX_NAME_CHARS).collect();
     let base = if base.is_empty() {
-        "wallpaper".to_string()
+        fallback.to_string()
     } else {
         base
     };

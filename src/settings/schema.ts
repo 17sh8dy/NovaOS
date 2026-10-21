@@ -1,3 +1,4 @@
+import { BITS_DEFAULTS, sanitizeBits, type BitsData } from './bits';
 /**
  * The single source of truth for NovaOS settings: shape, defaults, limits, and `sanitize`, which
  * turns ANY value (corrupt file, old version, hand-edited import) into a valid SettingsData.
@@ -41,6 +42,13 @@ export function wallpaperFile(wallpaper: string): string | null {
   const name = wallpaper.slice(5);
   return isWallpaperFileName(name) ? name : null;
 }
+
+/** Where custom cursor files are stored, inside the Nova Files root. */
+export const CURSOR_DIR = 'Pictures/Cursors';
+const CURSOR_FILE_RE = /^[A-Za-z0-9_()-][A-Za-z0-9 ._()-]{0,83}\.(cur|ani|png|gif)$/i;
+export const isCursorFileName = (name: unknown): name is string =>
+  typeof name === 'string' && CURSOR_FILE_RE.test(name);
+export type CursorHotspot = 'topleft' | 'center';
 
 export const TASKBAR_SIZES = { compact: 40, default: 48, large: 58 } as const;
 export type TaskbarSize = keyof typeof TASKBAR_SIZES;
@@ -110,6 +118,7 @@ export const PRESET_SECTIONS = [
   'motion',
   'cursor',
   'sounds',
+  'bits',
 ] as const;
 export type PresetSection = (typeof PRESET_SECTIONS)[number];
 export type PresetData = Pick<SettingsData, PresetSection>;
@@ -197,7 +206,14 @@ export interface SettingsData {
     ripple: boolean;
     /** `accent` follows the accent color; otherwise `#rrggbb`. */
     rippleColor: 'accent' | string;
+    /** A cursor file the user added (in Pictures/Cursors), or '' for the built-in styles. */
+    customFile: string;
+    /** Where a PNG/GIF cursor points (.cur and .ani files carry their own). */
+    customHotspot: CursorHotspot;
+    /** Use the custom cursor for links, text and window edges too, not just the arrow. */
+    customEverywhere: boolean;
   };
+  bits: BitsData;
   sounds: {
     enabled: boolean;
     volume: number;
@@ -266,7 +282,11 @@ export const DEFAULTS: SettingsData = {
     size: 32,
     ripple: false,
     rippleColor: 'accent',
+    customFile: '',
+    customHotspot: 'topleft',
+    customEverywhere: false,
   },
+  bits: BITS_DEFAULTS,
   sounds: { enabled: false, volume: 0.5, pack: 'soft', clicks: false },
   studio: {
     instantApply: true,
@@ -474,7 +494,11 @@ export function sanitize(input: unknown): SettingsData {
         c.rippleColor === 'accent' || isHexColor(c.rippleColor)
           ? c.rippleColor
           : D.cursor.rippleColor,
+      customFile: isCursorFileName(c.customFile) ? c.customFile : D.cursor.customFile,
+      customHotspot: oneOf(c.customHotspot, ['topleft', 'center'], D.cursor.customHotspot),
+      customEverywhere: bool(c.customEverywhere, D.cursor.customEverywhere),
     },
+    bits: sanitizeBits(root.bits),
     sounds: {
       enabled: bool(s.enabled, D.sounds.enabled),
       volume: num(s.volume, D.sounds.volume, LIMITS.volume),

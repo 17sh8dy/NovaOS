@@ -20,6 +20,7 @@ import {
 import { create } from 'zustand';
 import { launchApp } from '../../kernel/launcher';
 import { errorMessage, filesApi } from './filesApi';
+import { useListFx } from '../../shell/bits/useBits';
 import { useSettings } from '../../settings/store';
 import { ImportDialog } from './ImportDialog';
 import {
@@ -73,6 +74,7 @@ export function Files() {
   const [confirmTrash, setConfirmTrash] = useState<string | null>(null);
   const { confirmDelete, showSizes } = useSettings((s) => s.data.files);
   const singleClick = useSettings((s) => s.data.general.singleClickOpen);
+  const listFx = useListFx();
   const clip = useFileClipboard();
   const loadSeq = useRef(0);
 
@@ -436,8 +438,8 @@ export function Files() {
             <p className="p-6 text-center text-xs text-white/40">This folder is empty.</p>
           )}
           <ul>
-            {entries.map((e) => (
-              <li key={e.name}>
+            {entries.map((e, index) => (
+              <li key={e.name} {...listFx(index)}>
                 <button
                   onClick={() => {
                     setSelected(e.name);

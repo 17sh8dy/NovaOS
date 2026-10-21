@@ -30,7 +30,10 @@ export function Group({ title, children }: { title?: string; children: ReactNode
           {title}
         </h3>
       )}
-      <div className="divide-y divide-white/10 rounded-xl border border-white/10 bg-white/[0.03]">
+      <div
+        data-bit="bento"
+        className="relative divide-y divide-white/10 rounded-xl border border-white/10 bg-white/[0.03]"
+      >
         {children}
       </div>
     </div>

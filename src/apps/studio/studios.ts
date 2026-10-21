@@ -7,12 +7,21 @@ import {
   Palette,
   Sparkles,
   Volume2,
+  WandSparkles,
   type LucideIcon,
 } from 'lucide-react';
 import { DEFAULTS, patchSection, type SettingsData } from '../../settings/schema';
 
 export type StudioId =
-  'themes' | 'windows' | 'taskbar' | 'desktop' | 'motion' | 'cursor' | 'sounds' | 'interface';
+  | 'themes'
+  | 'windows'
+  | 'taskbar'
+  | 'desktop'
+  | 'motion'
+  | 'cursor'
+  | 'bits'
+  | 'sounds'
+  | 'interface';
 
 export type PageId = 'home' | StudioId | 'library';
 
@@ -105,9 +114,19 @@ export const STUDIOS: StudioDef[] = [
     id: 'cursor',
     title: 'Cursor',
     icon: MousePointer2,
-    blurb: 'A custom pointer in any color and size, and click ripples.',
-    keywords: 'cursor pointer mouse arrow dot crosshair ripple click color size',
+    blurb: 'A custom pointer in any color and size, your own cursor files, and click ripples.',
+    keywords:
+      'cursor pointer mouse arrow dot crosshair ripple click color size custom file cur ani',
     owned: [{ section: 'cursor' }],
+  },
+  {
+    id: 'bits',
+    title: 'React Bits',
+    icon: WandSparkles,
+    blurb: 'Optional effects: sparks, glows, magnets, shimmering text and more.',
+    keywords:
+      'react bits effects extras fun spark glow swarm mesh magnet dock chroma bento border shiny echo fold text animated list',
+    owned: [{ section: 'bits' }],
   },
   {
     id: 'sounds',

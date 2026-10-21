@@ -1,3 +1,4 @@
+mod cursor_file;
 mod db;
 mod import;
 mod import_cmds;
@@ -53,7 +54,12 @@ fn kv_set(db: State<'_, Db>, key: String, value: String) -> Result<(), String> {
 
 /// Web addresses NovaOS may open in the user's browser. The UI names a key, never a URL, so
 /// nothing it is given (or tricked into) can send the browser anywhere else.
-const LINKS: &[(&str, &str)] = &[("discord", "https://discord.gg/XBhER9Z6EB")];
+const LINKS: &[(&str, &str)] = &[
+    ("discord", "https://discord.gg/XBhER9Z6EB"),
+    ("rw-designer", "https://www.rw-designer.com/cursor-library"),
+    ("custom-cursor", "https://custom-cursor.com/"),
+    ("cursors-4u", "https://www.cursors-4u.com/"),
+];
 
 fn link_url(key: &str) -> Option<&'static str> {
     LINKS.iter().find(|(k, _)| *k == key).map(|(_, url)| *url)
@@ -197,6 +203,29 @@ async fn wallpaper_add(app: AppHandle) -> Result<Option<String>, String> {
     wallpaper::add_wallpaper(&src, &dir).map(|w| Some(w.file))
 }
 
+/// Pick a cursor file (.cur, .ani, PNG, GIF) with the native dialog and copy it into NovaOS. The
+/// original is only read. Returns the stored file name, or None if the dialog was cancelled.
+#[tauri::command]
+async fn cursor_add(app: AppHandle) -> Result<Option<String>, String> {
+    let picked = app
+        .dialog()
+        .file()
+        .add_filter("Cursors", cursor_file::EXTENSIONS)
+        .blocking_pick_file();
+    let Some(picked) = picked else {
+        return Ok(None);
+    };
+    let src = picked.into_path().map_err(|e| e.to_string())?;
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("NovaFiles")
+        .join("Pictures")
+        .join("Cursors");
+    cursor_file::add_cursor(&src, &dir).map(|c| Some(c.file))
+}
+
 /// Raw bytes for the image viewer, sent as a binary response rather than a JSON number array.
 #[tauri::command]
 fn fs_read_binary(
@@ -316,6 +345,7 @@ pub fn run() {
             open_recycle_bin,
             open_link,
             wallpaper_add,
+            cursor_add,
             fs_roots,
             fs_list,
             fs_mkdir,

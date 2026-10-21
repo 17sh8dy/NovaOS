@@ -1,5 +1,6 @@
 import type { LucideIcon } from 'lucide-react';
 import { useOpenProps } from '../settings/store';
+import { FxText } from './bits/FxText';
 
 export interface DesktopIconProps {
   id: string;
@@ -33,6 +34,7 @@ export function DesktopIcon(p: DesktopIconProps) {
     <button
       ref={(el) => p.register(p.id, el)}
       aria-label={p.ariaLabel}
+      data-bit="magnet chroma"
       aria-pressed={p.selected}
       title={p.title ?? (showLabel ? undefined : p.label)}
       onClick={(e) => {
@@ -55,7 +57,11 @@ export function DesktopIcon(p: DesktopIconProps) {
       }`}
     >
       <p.icon size={p.iconPx} className={p.iconClass ?? 'text-[var(--accent)]'} />
-      {showLabel && <span className="text-center leading-tight">{p.label}</span>}
+      {showLabel && (
+        <span className="text-center leading-tight">
+          <FxText where="icons">{p.label}</FxText>
+        </span>
+      )}
     </button>
   );
 }

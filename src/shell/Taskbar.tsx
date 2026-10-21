@@ -1,3 +1,4 @@
+import { FxText } from './bits/FxText';
 import { useEffect, useState } from 'react';
 import { LayoutGrid, Power } from 'lucide-react';
 import { getApp } from '../kernel/appRegistry';
@@ -53,12 +54,13 @@ export function Taskbar({ launch }: { launch: (appId: string) => void }) {
       >
         <button
           aria-label="Start"
+          data-bit="magnet"
           aria-expanded={startOpen}
           onPointerDown={(e) => e.stopPropagation()}
           onClick={toggleStart}
           className={`grid ${btn} place-items-center rounded-lg ${startOpen ? 'bg-white/20' : 'hover:bg-white/10'}`}
         >
-          <LayoutGrid size={18} className="text-[var(--accent)]" />
+          <LayoutGrid size={18} data-bit="dock" className="text-[var(--accent)]" />
         </button>
         <div className="mx-1 h-6 w-px bg-white/10" />
 
@@ -67,6 +69,7 @@ export function Taskbar({ launch }: { launch: (appId: string) => void }) {
             <button
               key={a.id}
               aria-label={`Open ${a.title}`}
+              data-bit="magnet chroma"
               title={a.title}
               onClick={() => launch(a.id)}
               onContextMenu={(e) =>
@@ -74,7 +77,7 @@ export function Taskbar({ launch }: { launch: (appId: string) => void }) {
               }
               className={`grid ${btn} place-items-center rounded-lg hover:bg-white/10`}
             >
-              <a.icon size={18} />
+              <a.icon size={18} data-bit="dock" />
             </button>
           ) : null,
         )}
@@ -148,7 +151,9 @@ function Clock({ general }: { general: SettingsData['general'] }) {
   const { time, date } = formatClock(now, general);
   return (
     <div className="px-2 text-right text-xs leading-tight text-white/80" aria-label="clock">
-      <div>{time}</div>
+      <div>
+        <FxText where="clock">{time}</FxText>
+      </div>
       {general.showDate && <div className="text-white/50">{date}</div>}
     </div>
   );

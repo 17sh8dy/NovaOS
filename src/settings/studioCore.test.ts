@@ -64,6 +64,9 @@ describe('new settings sections are validated', () => {
       size: LIMITS.cursorSize.min,
       ripple: false,
       rippleColor: '#00ff00',
+      customFile: '',
+      customHotspot: 'topleft',
+      customEverywhere: false,
     });
     expect(out.sounds).toEqual({ enabled: true, volume: 1, pack: 'retro', clicks: false });
     expect(out.interface.font).toBe('system');
@@ -153,6 +156,7 @@ describe('presets and looks', () => {
       [
         'accessibility',
         'appearance',
+        'bits',
         'cursor',
         'desktop',
         'interface',

@@ -1,3 +1,4 @@
+import { FxText } from './bits/FxText';
 import { useRef } from 'react';
 import { motion } from 'motion/react';
 import { Minus, Square, Copy, X } from 'lucide-react';
@@ -92,6 +93,7 @@ export function Window({ win, desktop }: { win: NovaWindow; desktop: Size }) {
       role="dialog"
       aria-label={win.title}
       data-testid={`window-${win.appId}`}
+      data-bit="glow"
       data-active={active}
       {...windowMotion(motionSettings.windowAnimation, win.minimized, motionSettings.speed)}
       style={{
@@ -116,7 +118,9 @@ export function Window({ win, desktop }: { win: NovaWindow; desktop: Size }) {
         onDoubleClick={() => toggleMaximize(win.id)}
       >
         <Icon size={14} className="text-[var(--accent)]" />
-        <span className="flex-1 truncate text-xs">{win.title}</span>
+        <span className="flex-1 truncate text-xs">
+          <FxText where="titles">{win.title}</FxText>
+        </span>
         <div
           className="flex"
           onPointerDown={(e) => e.stopPropagation()}

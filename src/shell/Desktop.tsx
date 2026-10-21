@@ -4,10 +4,15 @@ import { getApp } from '../kernel/appRegistry';
 import { launchApp, setDesktopSize } from '../kernel/launcher';
 import { useWindows, type Size } from '../kernel/windowStore';
 import { ICON_PX, taskbarReserved, wallpaperFile } from '../settings/schema';
+import { useCustomCursor } from '../settings/customCursor';
 import { playSound } from '../settings/sounds';
 import { useSettings } from '../settings/store';
 import { themeAttrs, themeStyle } from '../settings/theme';
 import { useWallpaperImage } from '../settings/wallpaper';
+import { BitsDom } from './bits/BitsDom';
+import { BitsOverlay } from './bits/BitsOverlay';
+import { ElasticMesh } from './bits/ElasticMesh';
+import { bitsAttr, bitsVars, useActiveBits } from './bits/useBits';
 import { ClickRipple } from './ClickRipple';
 import { NovaCursor, useNovaPointer } from './NovaCursor';
 import { useContextMenu } from './ContextMenu';
@@ -46,9 +51,11 @@ export function Desktop() {
   const closeStart = useShell((s) => s.closeStart);
   const { mode, setMode, exitImmersive } = useDisplay();
   const startedImmersive = useRef(false);
-  const novaPointer = useNovaPointer(cursor.engine, mode);
+  const custom = useCustomCursor(cursor.customFile || null);
+  const novaPointer = useNovaPointer(cursor.engine, mode, custom.status === 'ready');
   const [novaReady, setNovaReady] = useState(false);
   const { open: openMenu, menu } = useContextMenu();
+  const bits = useActiveBits();
 
   const image = useWallpaperImage(wallpaperFile(appearance.wallpaper));
 
@@ -216,13 +223,15 @@ export function Desktop() {
         {...themeAttrs(data)}
         data-cursor-engine={novaPointer && novaReady ? 'nova' : 'system'}
         className="relative h-screen w-screen overflow-hidden text-white select-none"
-        style={themeStyle(data, image)}
+        data-fx={bitsAttr(bits)}
+        style={{ ...themeStyle(data, image), ...bitsVars(bits) }}
         onPointerDown={closeStart}
         onContextMenu={(e) => {
           // Our own menus replace the browser's; text fields keep theirs (copy/paste).
           if (!(e.target as HTMLElement).closest('input, textarea')) e.preventDefault();
         }}
       >
+        <ElasticMesh config={bits.elasticMesh} />
         <div
           ref={layer}
           data-testid="desktop-layer"
@@ -290,7 +299,15 @@ export function Desktop() {
         </div>
         <StartMenu launch={launch} />
         <Taskbar launch={launch} />
-        <NovaCursor active={novaPointer} cursor={cursor} onReady={setNovaReady} />
+        <BitsOverlay bits={bits} />
+        <BitsDom bits={bits} />
+        <NovaCursor
+          active={novaPointer}
+          cursor={cursor}
+          onReady={setNovaReady}
+          custom={custom.cursor}
+          animate={!accessibility.reduceMotion}
+        />
         <ClickRipple enabled={cursor.ripple && !accessibility.reduceMotion} speed={motion.speed} />
         {menu}
       </div>

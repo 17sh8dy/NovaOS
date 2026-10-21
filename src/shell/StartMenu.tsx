@@ -6,6 +6,7 @@ import { taskbarReserved } from '../settings/schema';
 import { useSettings } from '../settings/store';
 import { useContextMenu } from './ContextMenu';
 import { useDisplay } from './displayMode';
+import { useListFx } from './bits/useBits';
 import { appMenuItems } from './pinMenu';
 import { useShell } from './shellStore';
 
@@ -16,6 +17,7 @@ export function StartMenu({ launch }: { launch: (appId: string) => void }) {
   const data = useSettings((s) => s.data);
   const pin = useSettings((s) => s.pin);
   const { open: openMenu, menu } = useContextMenu();
+  const listFx = useListFx();
   if (!startOpen) return null;
 
   const { taskbarPosition } = data.desktop;
@@ -36,6 +38,7 @@ export function StartMenu({ launch }: { launch: (appId: string) => void }) {
         aria-label="Start menu"
         style={taskbarPosition === 'top' ? { top: offset } : { bottom: offset }}
         onPointerDown={(e) => e.stopPropagation()}
+        data-bit="glow"
         className="glass absolute left-2 z-[100001] w-80 rounded-[calc(var(--radius)+4px)] border border-white/10 bg-[var(--surface)] p-3 shadow-2xl"
       >
         <label className="mb-3 flex items-center gap-2 rounded-lg bg-black/30 px-3 py-2">
@@ -53,11 +56,17 @@ export function StartMenu({ launch }: { launch: (appId: string) => void }) {
           />
         </label>
         <div className="grid grid-cols-3 gap-1">
-          {apps.map((a) => {
+          {apps.map((a, index) => {
+            const fx = listFx(index);
             const onTaskbar = isPinned(data, 'taskbar', a.id);
             const onDesktop = isPinned(data, 'desktop', a.id);
             return (
-              <div key={a.id} className="group relative">
+              <div
+                key={a.id}
+                data-bit="bento chroma"
+                style={fx.style}
+                className={`group relative rounded-lg ${fx.className ?? ''}`}
+              >
                 <button
                   role="menuitem"
                   onClick={() => run(a.id)}
@@ -66,7 +75,7 @@ export function StartMenu({ launch }: { launch: (appId: string) => void }) {
                   }
                   className="flex w-full flex-col items-center gap-1 rounded-lg p-3 text-xs hover:bg-white/10"
                 >
-                  <a.icon size={24} className="text-[var(--accent)]" />
+                  <a.icon size={24} data-bit="dock" className="text-[var(--accent)]" />
                   {a.title}
                 </button>
                 <div className="absolute top-1 right-1 hidden gap-0.5 group-focus-within:flex group-hover:flex">

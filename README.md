@@ -94,8 +94,8 @@ Nova Files → **Import** brings Windows/Linux files and folders in through the 
 One app for every customization (Settings keeps system pages: General, Files & Storage,
 Keyboard shortcuts, Privacy & Security, Data & Backup, About).
 
-- **Studios** in one window: Themes, Windows, Taskbar, Desktop, Motion, Cursor, Sounds, Interface,
-  plus Home and Library. Every control is defined once in `apps/studio/controls.tsx`; the studio
+- **Studios** in one window: Themes, Windows, Taskbar, Desktop, Motion, Cursor, React Bits, Sounds,
+  Interface, plus Home and Library. Every control is defined once in `apps/studio/controls.tsx`; the studio
   pages, global search and Home favorites all render from that list.
 - **Live preview**: a miniature desktop rendered with the same `themeStyle()` the real desktop
   uses. Hover it to try your pointer; click it to try ripples.
@@ -119,3 +119,23 @@ Keyboard shortcuts, Privacy & Security, Data & Backup, About).
 - **Links**: a few quiet "Join the Discord" links where they belong (Settings → About, Nova Studio
   Home, Library). The UI never passes a URL to Rust; it names a key and Rust opens only the
   allow-listed address (`open_link`, `src-tauri/src/lib.rs`, `src/links.ts`).
+
+## Your own cursor files, and React Bits
+
+- **Custom cursor files** (Nova Studio → Cursor → Your own cursor): add a `.cur`, animated `.ani`,
+  PNG or GIF (up to 2 MB). Rust (`cursor_file.rs`, `cursor_add`) checks the file's real header,
+  copies it into `NovaFiles/Pictures/Cursors` (never overwriting, original untouched) and the UI
+  decodes it as plain image data (`settings/customCursor.ts`, every length bounds-checked). NovaOS
+  draws it itself (`shell/NovaCursor.tsx`), so it works windowed and in Immersive Mode. `.cur` and
+  `.ani` carry their own hotspot and timing; PNG/GIF can point at the corner or the center. If a
+  file can't be read, the normal pointer stays. Links to RW-Designer, Custom Cursor and Cursors-4U
+  go through the same allow-listed `open_link` (cursors belong to their creators: check licenses).
+- **React Bits** (Nova Studio → React Bits): thirteen optional effects behind glass pills, all OFF by
+  default and written for NovaOS (inspired by the React Bits collection; no code or packages from
+  it): Click Spark, Glow Cursor, Swarm Cursor, Elastic Mesh, Magnet, Dock, Chroma Grid, Magic
+  Bento, Border Glow, Shiny Text, Echo Text, Fold Text, Animated List. Each has its own tweaks
+  (color, size, strength, where it applies). The schema, limits and catalog live in
+  `settings/bits.ts`; the effects in `shell/bits/` (`engine.ts` is the testable math). Elements opt
+  in with `data-bit="..."`. Reduce motion and High contrast switch the affected effects off
+  (`activeBits`). Splash Cursor (WebGL fluid) is deliberately not included: it is heavy and makes
+  text hard to read on a desktop.

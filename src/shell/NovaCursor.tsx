@@ -1,10 +1,36 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { framePose, type LoadedCursor } from '../settings/customCursor';
 import type { CursorEngine, SettingsData } from '../settings/schema';
 import { drawShape, shapeFor, toDataUri, type Shape } from './cursorShapes';
 
-/** Should NovaOS draw the pointer itself right now? */
-export function useNovaPointer(engine: CursorEngine, mode: string): boolean {
-  return engine === 'nova' || (engine === 'auto' && mode === 'immersive');
+/**
+ * Should NovaOS draw the pointer itself right now? Yes in Immersive Mode (Automatic), whenever
+ * the user chose "Always NovaOS", and whenever a custom cursor file is in use (only NovaOS can
+ * draw those). Choosing "Windows" always wins.
+ */
+export function useNovaPointer(engine: CursorEngine, mode: string, hasCustom = false): boolean {
+  if (engine === 'system') return false;
+  return engine === 'nova' || mode === 'immersive' || hasCustom;
+}
+
+/** Which frame of an animated cursor to show. Stays on the first frame when `animate` is off. */
+function useFrameStep(custom: LoadedCursor | null, animate: boolean): number {
+  const [step, setStep] = useState(0);
+  const count = custom?.sequence.length ?? 0;
+  useEffect(() => {
+    setStep(0);
+    if (!custom || !animate || count < 2) return;
+    let i = 0;
+    let timer = 0;
+    const tick = () => {
+      i = (i + 1) % count;
+      setStep(i);
+      timer = window.setTimeout(tick, custom.delays[i] ?? 100);
+    };
+    timer = window.setTimeout(tick, custom.delays[0] ?? 100);
+    return () => window.clearTimeout(timer);
+  }, [custom, animate, count]);
+  return step;
 }
 
 /**
@@ -19,10 +45,16 @@ export function NovaCursor({
   active,
   cursor,
   onReady,
+  custom = null,
+  animate = true,
 }: {
   active: boolean;
   cursor: SettingsData['cursor'];
   onReady: (ready: boolean) => void;
+  /** A decoded custom cursor file, drawn instead of the built-in arrow (and, optionally, the rest). */
+  custom?: LoadedCursor | null;
+  /** Play an animated cursor; off (Reduce motion) shows its first frame. */
+  animate?: boolean;
 }) {
   const el = useRef<HTMLImageElement>(null);
   const pos = useRef({ x: 0, y: 0 });
@@ -41,8 +73,13 @@ export function NovaCursor({
       }),
     [shape, cursor.color, cursor.outline, cursor.size, cursor.style],
   );
+  const useCustom = custom !== null && (shape === 'arrow' || cursor.customEverywhere);
+  const step = useFrameStep(useCustom ? custom : null, animate);
+  const frame = useCustom ? custom.frames[custom.sequence[step] ?? 0] : null;
+  const pose = frame ? framePose(frame, cursor.size, cursor.customHotspot) : null;
+
   const hotspot = useRef(drawing.hotspot);
-  hotspot.current = drawing.hotspot;
+  hotspot.current = pose ? pose.hotspot : drawing.hotspot;
 
   const place = () => {
     const node = el.current;
@@ -103,11 +140,11 @@ export function NovaCursor({
       alt=""
       aria-hidden="true"
       draggable={false}
-      src={toDataUri(drawing.svg)}
+      src={frame ? frame.url : toDataUri(drawing.svg)}
       className="pointer-events-none fixed top-0 left-0 select-none"
       style={{
-        width: cursor.size,
-        height: cursor.size,
+        width: pose ? pose.width : cursor.size,
+        height: pose ? pose.height : cursor.size,
         zIndex: 2147483000,
         display: hidden ? 'none' : 'block',
         willChange: 'transform',
