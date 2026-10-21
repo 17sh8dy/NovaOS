@@ -51,6 +51,20 @@ fn kv_set(db: State<'_, Db>, key: String, value: String) -> Result<(), String> {
     db.set(&key, &value)
 }
 
+/// Web addresses NovaOS may open in the user's browser. The UI names a key, never a URL, so
+/// nothing it is given (or tricked into) can send the browser anywhere else.
+const LINKS: &[(&str, &str)] = &[("discord", "https://discord.gg/XBhER9Z6EB")];
+
+fn link_url(key: &str) -> Option<&'static str> {
+    LINKS.iter().find(|(k, _)| *k == key).map(|(_, url)| *url)
+}
+
+#[tauri::command]
+fn open_link(key: String) -> Result<(), String> {
+    let url = link_url(&key).ok_or("unknown link")?;
+    opener::open_browser(url).map_err(|e| format!("could not open your browser: {e}"))
+}
+
 /// The program and arguments that open the host's Recycle Bin / Trash. Fixed constants: nothing
 /// from the UI ever reaches a command line.
 fn recycle_bin_command() -> (&'static str, &'static [&'static str]) {
@@ -300,6 +314,7 @@ pub fn run() {
             kv_set,
             set_fullscreen,
             open_recycle_bin,
+            open_link,
             wallpaper_add,
             fs_roots,
             fs_list,
@@ -330,7 +345,26 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::recycle_bin_command;
+    use super::{link_url, recycle_bin_command, LINKS};
+
+    #[test]
+    fn links_are_a_fixed_https_allowlist() {
+        assert_eq!(link_url("discord"), Some("https://discord.gg/XBhER9Z6EB"));
+        for bad in [
+            "",
+            "Discord",
+            "http://evil.example",
+            "discord ",
+            "../discord",
+            "https://discord.gg/XBhER9Z6EB",
+        ] {
+            assert_eq!(link_url(bad), None, "{bad:?} must not resolve");
+        }
+        for (_, url) in LINKS {
+            assert!(url.starts_with("https://"), "{url}");
+            assert!(!url.contains(' ') && !url.contains('"'), "{url}");
+        }
+    }
 
     #[test]
     fn recycle_bin_command_is_a_fixed_known_program() {

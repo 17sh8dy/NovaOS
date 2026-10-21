@@ -107,3 +107,15 @@ Keyboard shortcuts, Privacy & Security, Data & Backup, About).
   window shadow/title bar/border/animation/speed, floating taskbar, icon labels and spacing, fonts,
   and per-app pinning to the taskbar and desktop (Start-menu buttons, right-click, or Studio).
 - Settings are validated by `sanitize()` (schema v2); old `unpinned` data migrates automatically.
+
+## NovaOS's own pointer, and community links
+
+- **Pointer engine** (Nova Studio → Cursor): fullscreen webviews can freeze or hide the system
+  pointer, especially custom image cursors. In **Immersive Mode** NovaOS now hides the native
+  pointer and draws its own (`shell/NovaCursor.tsx`), following every pointer move with the right
+  shape (arrow, I-beam over text, hand over links, resize arrows) in your chosen style/color/size.
+  Safety: the native pointer is only hidden after NovaOS's has a position to draw, and focus loss
+  never hides it. Options: Automatic (Immersive only, default), Always NovaOS, Windows.
+- **Links**: a few quiet "Join the Discord" links where they belong (Settings → About, Nova Studio
+  Home, Library). The UI never passes a URL to Rust; it names a key and Rust opens only the
+  allow-listed address (`open_link`, `src-tauri/src/lib.rs`, `src/links.ts`).

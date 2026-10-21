@@ -75,3 +75,9 @@ button {
     opacity: 0;
   }
 }
+
+/* NovaOS draws its own pointer (see NovaCursor): hide the native one everywhere, resize edges included. */
+[data-cursor-engine='nova'],
+[data-cursor-engine='nova'] * {
+  cursor: none !important;
+}

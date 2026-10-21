@@ -57,6 +57,7 @@ describe('new settings sections are validated', () => {
     expect(out.windows).toEqual({ shadow: 'strong', titleBar: 'default', activeBorder: 'off' });
     expect(out.motion).toEqual({ speed: LIMITS.motionSpeed.max, windowAnimation: 'slide' });
     expect(out.cursor).toEqual({
+      engine: 'auto',
       style: 'dot',
       color: '#abcdef',
       outline: '#000000',

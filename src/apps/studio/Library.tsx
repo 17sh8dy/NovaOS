@@ -12,6 +12,7 @@ import {
 } from '../../settings/schema';
 import { errorMessage, filesApi } from '../files/filesApi';
 import { isTauri } from '../../native/bridge';
+import { ExternalLink } from '../../components/ExternalLink';
 import { Button, Group, Page, Row } from '../settings/ui';
 import type { StudioSession } from './useStudioSession';
 
@@ -186,6 +187,10 @@ export function Library({ session }: { session: StudioSession }) {
           <span className="text-[11px] text-white/40">Files live in Nova Files → Documents.</span>
         </div>
       </Group>
+
+      <p className="text-xs text-white/40">
+        Made a look you love? <ExternalLink to="discord">Share it in the Discord</ExternalLink>
+      </p>
 
       {note && (
         <p role="status" className={`text-xs ${note.ok ? 'text-emerald-300' : 'text-rose-300'}`}>

@@ -9,6 +9,7 @@ import { useSettings } from '../settings/store';
 import { themeAttrs, themeStyle } from '../settings/theme';
 import { useWallpaperImage } from '../settings/wallpaper';
 import { ClickRipple } from './ClickRipple';
+import { NovaCursor, useNovaPointer } from './NovaCursor';
 import { useContextMenu } from './ContextMenu';
 import { DesktopIcon } from './DesktopIcon';
 import { RecycleBin } from './RecycleBin';
@@ -45,6 +46,8 @@ export function Desktop() {
   const closeStart = useShell((s) => s.closeStart);
   const { mode, setMode, exitImmersive } = useDisplay();
   const startedImmersive = useRef(false);
+  const novaPointer = useNovaPointer(cursor.engine, mode);
+  const [novaReady, setNovaReady] = useState(false);
   const { open: openMenu, menu } = useContextMenu();
 
   const image = useWallpaperImage(wallpaperFile(appearance.wallpaper));
@@ -211,6 +214,7 @@ export function Desktop() {
         data-testid="desktop"
         data-mode={mode}
         {...themeAttrs(data)}
+        data-cursor-engine={novaPointer && novaReady ? 'nova' : 'system'}
         className="relative h-screen w-screen overflow-hidden text-white select-none"
         style={themeStyle(data, image)}
         onPointerDown={closeStart}
@@ -286,6 +290,7 @@ export function Desktop() {
         </div>
         <StartMenu launch={launch} />
         <Taskbar launch={launch} />
+        <NovaCursor active={novaPointer} cursor={cursor} onReady={setNovaReady} />
         <ClickRipple enabled={cursor.ripple && !accessibility.reduceMotion} speed={motion.speed} />
         {menu}
       </div>

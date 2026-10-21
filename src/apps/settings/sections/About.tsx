@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { isTauri, native, type PlatformInfo } from '../../../native/bridge';
+import { ExternalLink } from '../../../components/ExternalLink';
 import { Group, Page, Row } from '../ui';
 
 export function About() {
@@ -21,6 +22,9 @@ export function About() {
           <span className="text-sm text-white/70">
             {info ? `${info.os} ${info.arch}` : 'Browser preview'}
           </span>
+        </Row>
+        <Row label="Community" hint="Suggest ideas, report bugs and chat with other NovaOS users.">
+          <ExternalLink to="discord">Join the Discord</ExternalLink>
         </Row>
         <Row label="Built with">
           <span className="text-sm text-white/70">

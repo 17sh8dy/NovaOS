@@ -56,6 +56,8 @@ export type ActiveBorder = 'accent' | 'subtle' | 'off';
 export type FontChoice = 'system' | 'sans' | 'serif' | 'mono' | 'rounded';
 export type WindowAnimation = 'scale' | 'fade' | 'slide' | 'none';
 export type CursorStyle = 'system' | 'classic' | 'dot' | 'crosshair';
+/** Who draws the pointer: Windows (`system`) or NovaOS itself (`nova`). `auto` = NovaOS in Immersive Mode. */
+export type CursorEngine = 'auto' | 'nova' | 'system';
 export type SoundPack = 'soft' | 'click' | 'chime' | 'retro';
 export type StudioSidebar = 'full' | 'compact';
 export type PreviewPosition = 'top' | 'side';
@@ -186,6 +188,7 @@ export interface SettingsData {
     windowAnimation: WindowAnimation;
   };
   cursor: {
+    engine: CursorEngine;
     style: CursorStyle;
     color: string;
     outline: string;
@@ -256,6 +259,7 @@ export const DEFAULTS: SettingsData = {
   interface: { font: 'system' },
   motion: { speed: 1, windowAnimation: 'scale' },
   cursor: {
+    engine: 'auto',
     style: 'system',
     color: '#ffffff',
     outline: '#000000',
@@ -460,6 +464,7 @@ export function sanitize(input: unknown): SettingsData {
       ),
     },
     cursor: {
+      engine: oneOf(c.engine, ['auto', 'nova', 'system'], D.cursor.engine),
       style: oneOf(c.style, ['system', 'classic', 'dot', 'crosshair'], D.cursor.style),
       color: hex(c.color, D.cursor.color),
       outline: hex(c.outline, D.cursor.outline),

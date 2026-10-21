@@ -6,6 +6,7 @@ import {
   accentColor,
   isHexColor,
   type AccentName,
+  type CursorEngine,
   type CursorStyle,
   type FontChoice,
   type SettingsData,
@@ -627,6 +628,27 @@ export const CONTROLS: ControlDef[] = [
   },
 
   // ------------------------------------------------------------------ Cursor
+  {
+    id: 'cursor.engine',
+    studio: 'cursor',
+    group: 'Pointer',
+    title: 'Who draws the pointer',
+    hint: 'NovaOS can draw its own pointer, which never gets stuck or goes missing. Automatic uses it in Immersive Mode.',
+    keywords:
+      'cursor pointer engine nova own software immersive invisible stuck missing fullscreen windows',
+    render: ({ data, set }) => (
+      <Segmented<CursorEngine>
+        label="Pointer engine"
+        value={data.cursor.engine}
+        onChange={(v) => set('cursor', { engine: v })}
+        options={[
+          { value: 'auto', label: 'Automatic' },
+          { value: 'nova', label: 'Always NovaOS' },
+          { value: 'system', label: 'Windows' },
+        ]}
+      />
+    ),
+  },
   {
     id: 'cursor.style',
     studio: 'cursor',

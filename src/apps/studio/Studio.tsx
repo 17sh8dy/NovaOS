@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { BUILTIN_LOOKS } from '../../settings/builtinPresets';
 import { applyLook } from '../../settings/schema';
+import { ExternalLink } from '../../components/ExternalLink';
 import { Button, Group, Page, Toggle } from '../settings/ui';
 import { CONTROLS, controlById, searchControls, type ControlDef } from './controls';
 import { Library } from './Library';
@@ -153,6 +154,10 @@ function Home({ session, go }: { session: StudioSession; go: (p: PageId) => void
           Keeps your saved looks and favorites. Undo is one click away.
         </span>
       </div>
+      <p className="text-xs text-white/40">
+        Want to suggest an idea for Nova Studio?{' '}
+        <ExternalLink to="discord">Join the Discord</ExternalLink>
+      </p>
     </Page>
   );
 }
