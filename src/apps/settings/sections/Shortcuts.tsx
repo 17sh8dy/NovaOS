@@ -18,6 +18,17 @@ const GROUPS: { title: string; items: [string, string[]][] }[] = [
       ['Go up a folder', ['Backspace']],
     ],
   },
+  {
+    title: 'Nova Studio',
+    items: [
+      ['Undo the last change', ['Ctrl', 'Z']],
+      ['Redo', ['Ctrl', 'Shift', 'Z']],
+    ],
+  },
+  {
+    title: 'Pinning',
+    items: [['Pin or unpin an app on the taskbar or desktop', ['Right-click']]],
+  },
   { title: 'Nova Editor', items: [['Save now (it also autosaves)', ['Ctrl', 'S']]] },
 ];
 

@@ -52,3 +52,26 @@ button {
   transition-duration: 0s !important;
   animation-duration: 0s !important;
 }
+
+/* A custom mouse cursor (chosen in Nova Studio) also applies over buttons and window title bars. */
+[data-cursor='custom'] button,
+[data-cursor='custom'] [role='menuitem'],
+[data-cursor='custom'] .cursor-default {
+  cursor: var(--cursor);
+}
+[data-cursor='custom'] textarea,
+[data-cursor='custom']
+  input:not([type='range']):not([type='checkbox']):not([type='radio']):not([type='color']) {
+  cursor: text;
+}
+
+@keyframes nova-ripple {
+  from {
+    transform: scale(0.3);
+    opacity: 0.9;
+  }
+  to {
+    transform: scale(1.7);
+    opacity: 0;
+  }
+}

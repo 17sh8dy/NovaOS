@@ -1,22 +1,18 @@
 import { useMemo, useState, type ComponentType } from 'react';
 import {
-  Accessibility as AccessibilityIcon,
   Database,
   FolderCog,
   Info,
   Keyboard,
-  Monitor,
   Palette,
   Search,
   ShieldCheck,
   SlidersHorizontal,
   type LucideIcon,
 } from 'lucide-react';
+import { launchApp } from '../../kernel/launcher';
 import { About } from './sections/About';
-import { Accessibility } from './sections/Accessibility';
-import { Appearance } from './sections/Appearance';
 import { DataBackup } from './sections/DataBackup';
-import { DesktopTaskbar } from './sections/DesktopTaskbar';
 import { FilesStorage } from './sections/FilesStorage';
 import { General } from './sections/General';
 import { Privacy } from './sections/Privacy';
@@ -26,34 +22,24 @@ export interface SectionDef {
   id: string;
   title: string;
   icon: LucideIcon;
-  /** Extra words the search box matches, so "blur" finds Appearance. */
+  /** Extra words the search box matches, so "clock" finds General. */
   keywords: string;
   component: ComponentType;
 }
 
-/** Adding a settings section is one entry here plus its component. */
+/**
+ * System settings. Everything about how NovaOS looks and feels (themes, wallpaper, windows,
+ * taskbar, desktop, cursor, motion, sounds, accessibility) lives in Nova Studio.
+ * Adding a section here is one entry plus its component.
+ */
 export const SECTIONS: SectionDef[] = [
   {
     id: 'general',
     title: 'General',
     icon: SlidersHorizontal,
-    keywords: 'start immersive windowed fullscreen display clock time 24 hour date seconds',
-    component: General,
-  },
-  {
-    id: 'appearance',
-    title: 'Appearance',
-    icon: Palette,
     keywords:
-      'accent color wallpaper background theme opacity transparency blur glass corners rounded',
-    component: Appearance,
-  },
-  {
-    id: 'desktop',
-    title: 'Desktop & Taskbar',
-    icon: Monitor,
-    keywords: 'taskbar position top bottom size icons pinned apps shortcuts',
-    component: DesktopTaskbar,
+      'start immersive windowed fullscreen display clock time 24 hour date seconds click open',
+    component: General,
   },
   {
     id: 'files',
@@ -61,13 +47,6 @@ export const SECTIONS: SectionDef[] = [
     icon: FolderCog,
     keywords: 'folders access delete confirm recycle sizes data location add folder',
     component: FilesStorage,
-  },
-  {
-    id: 'accessibility',
-    title: 'Accessibility',
-    icon: AccessibilityIcon,
-    keywords: 'text size scale zoom contrast motion animation reduce',
-    component: Accessibility,
   },
   {
     id: 'shortcuts',
@@ -93,6 +72,35 @@ export const SECTIONS: SectionDef[] = [
   { id: 'about', title: 'About', icon: Info, keywords: 'version platform build', component: About },
 ];
 
+/** Words that mean "how NovaOS looks": we point those searches at Nova Studio. */
+export const STUDIO_WORDS =
+  /theme|wallpaper|background|accent|colou?r|taskbar|desktop|icon|cursor|mouse|motion|animation|sound|audio|font|contrast|scale|zoom|blur|opacity|transparen|corner|window|pin|accessib|selection|ripple|preset|look|style/i;
+
+function StudioCard({ query }: { query?: string }) {
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+      <div className="flex items-center gap-3">
+        <Palette size={22} className="text-[var(--accent)]" />
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold">
+            {query ? `“${query}” is in Nova Studio` : 'Looking to customize NovaOS?'}
+          </div>
+          <div className="text-xs text-white/50">
+            Themes, wallpaper, windows, taskbar, desktop, cursor, motion, sounds and accessibility
+            all live in Nova Studio.
+          </div>
+        </div>
+        <button
+          onClick={() => launchApp('studio')}
+          className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs text-white"
+        >
+          Open Nova Studio
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function Settings() {
   const [active, setActive] = useState(SECTIONS[0].id);
   const [query, setQuery] = useState('');
@@ -106,6 +114,8 @@ export function Settings() {
   // If a search hides the open section, show the first match instead of an empty pane.
   const current = visible.find((s) => s.id === active) ?? visible[0];
   const Body = current?.component;
+  const q = query.trim();
+  const studioHint = q !== '' && STUDIO_WORDS.test(q);
 
   return (
     <div className="flex h-full text-sm" data-testid="settings">
@@ -139,11 +149,23 @@ export function Settings() {
             {s.title}
           </button>
         ))}
-        {visible.length === 0 && (
+        {visible.length === 0 && !studioHint && (
           <p className="px-2 py-3 text-xs text-white/50">No settings match.</p>
         )}
+        <div className="flex-1" />
+        <button
+          onClick={() => launchApp('studio')}
+          className="flex items-center gap-2.5 rounded-lg border border-white/10 px-2.5 py-2 text-left text-xs hover:bg-white/10"
+        >
+          <Palette size={15} className="text-[var(--accent)]" />
+          Open Nova Studio
+        </button>
       </nav>
-      <main className="min-w-0 flex-1 overflow-auto p-5">{Body ? <Body /> : null}</main>
+      <main className="min-w-0 flex-1 space-y-4 overflow-auto p-5">
+        {studioHint && <StudioCard query={q} />}
+        {Body ? <Body /> : null}
+        {!q && current?.id === 'general' && <StudioCard />}
+      </main>
     </div>
   );
 }

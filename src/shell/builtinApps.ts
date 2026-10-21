@@ -4,6 +4,7 @@ import {
   FolderOpen,
   Image as ImageIcon,
   NotebookPen,
+  Palette,
   Settings as SettingsIcon,
 } from 'lucide-react';
 import { getApp, registerApp } from '../kernel/appRegistry';
@@ -12,6 +13,7 @@ import { Notes } from '../apps/notes/Notes';
 import { Settings } from '../apps/settings/Settings';
 import { Files } from '../apps/files/Files';
 import { Editor } from '../apps/editor/Editor';
+import { Studio } from '../apps/studio/Studio';
 import { Viewer } from '../apps/viewer/Viewer';
 
 /** Idempotent so hot reload and tests can call it repeatedly. */
@@ -40,6 +42,15 @@ export function registerBuiltinApps(): void {
     component: Viewer,
     defaultSize: { width: 640, height: 480 },
     hidden: true,
+  });
+  registerApp({
+    id: 'studio',
+    title: 'Nova Studio',
+    icon: Palette,
+    component: Studio,
+    defaultSize: { width: 1000, height: 680 },
+    singleton: true,
+    pinned: true,
   });
   registerApp({
     id: 'settings',

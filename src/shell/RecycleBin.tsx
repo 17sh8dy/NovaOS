@@ -3,7 +3,7 @@ import { Trash2 } from 'lucide-react';
 import { native } from '../native/bridge';
 import { DesktopIcon, type DesktopIconProps } from './DesktopIcon';
 
-type Shared = Pick<DesktopIconProps, 'iconPx' | 'selected' | 'onSelect' | 'register'>;
+type Shared = Pick<DesktopIconProps, 'iconPx' | 'selected' | 'onSelect' | 'register' | 'showLabel'>;
 
 /**
  * The Recycle Bin: always on the desktop. Everything deleted in Nova Files goes to the host

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   ACCENTS,
   DEFAULTS,
+  DEFAULT_PINNED,
   LIMITS,
   accentColor,
   exportSettings,
@@ -80,14 +81,31 @@ describe('sanitize', () => {
       expect(sanitize({ accessibility: { uiScale: bad } }).accessibility.uiScale).toBe(1);
   });
 
-  it('keeps only well-formed, de-duplicated, bounded unpinned ids', () => {
+  it('keeps only well-formed, de-duplicated, ordered, bounded pin lists', () => {
     const many = Array.from({ length: 300 }, (_, i) => `app-${i}`);
     expect(
-      sanitize({ desktop: { unpinned: ['files', 'files', 'Bad Id', '../x', 5, 'notes'] } }).desktop
-        .unpinned,
-    ).toEqual(['files', 'notes']);
-    expect(sanitize({ desktop: { unpinned: many } }).desktop.unpinned).toHaveLength(100);
-    expect(sanitize({ desktop: { unpinned: 'files' } }).desktop.unpinned).toEqual([]);
+      sanitize({
+        desktop: { taskbarPinned: ['notes', 'files', 'notes', 'Bad Id', '../x', 5, 'studio'] },
+      }).desktop.taskbarPinned,
+    ).toEqual(['notes', 'files', 'studio']); // order kept, duplicates and junk dropped
+    expect(sanitize({ desktop: { desktopPinned: many } }).desktop.desktopPinned).toHaveLength(40);
+    expect(sanitize({ desktop: { taskbarPinned: [] } }).desktop.taskbarPinned).toEqual([]); // empty is allowed
+    expect(sanitize({}).desktop.taskbarPinned).toEqual([...DEFAULT_PINNED]);
+    expect(sanitize({ desktop: { desktopPinned: 'files' } }).desktop.desktopPinned).toEqual([
+      ...DEFAULT_PINNED,
+    ]);
+  });
+
+  it('migrates the old "unpinned" list into the new pin lists, once', () => {
+    const out = sanitize({ desktop: { unpinned: ['notes', 'calculator'] } });
+    expect(out.desktop.taskbarPinned).toEqual(['files', 'studio', 'settings']);
+    expect(out.desktop.desktopPinned).toEqual(['files', 'studio', 'settings']);
+    expect(out.desktop).not.toHaveProperty('unpinned');
+    // an explicit new list always wins over the legacy one
+    expect(
+      sanitize({ desktop: { unpinned: ['notes'], taskbarPinned: ['notes'] } }).desktop
+        .taskbarPinned,
+    ).toEqual(['notes']);
   });
 
   it('patchSection validates the patch too', () => {

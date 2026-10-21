@@ -3,6 +3,8 @@ import { motion } from 'motion/react';
 import { Minus, Square, Copy, X } from 'lucide-react';
 import { getApp } from '../kernel/appRegistry';
 import { MIN_WINDOW, useWindows, type NovaWindow, type Size } from '../kernel/windowStore';
+import { windowMotion } from '../settings/motion';
+import { useSettings } from '../settings/store';
 
 type Edge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
 const EDGES: Edge[] = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'];
@@ -23,6 +25,7 @@ export function Window({ win, desktop }: { win: NovaWindow; desktop: Size }) {
   const app = getApp(win.appId);
   const drag = useRef<{ px: number; py: number; x: number; y: number } | null>(null);
   const active = activeId === win.id;
+  const motionSettings = useSettings((s) => s.data.motion);
 
   const startDrag = (e: React.PointerEvent) => {
     if (e.button !== 0 || win.maximized) return;
@@ -90,21 +93,22 @@ export function Window({ win, desktop }: { win: NovaWindow; desktop: Size }) {
       aria-label={win.title}
       data-testid={`window-${win.appId}`}
       data-active={active}
-      initial={{ opacity: 0, scale: 0.96 }}
-      animate={{ opacity: win.minimized ? 0 : 1, scale: win.minimized ? 0.9 : 1 }}
-      transition={{ duration: 0.12 }}
+      {...windowMotion(motionSettings.windowAnimation, win.minimized, motionSettings.speed)}
       style={{
         ...style,
         pointerEvents: win.minimized ? 'none' : 'auto',
         visibility: win.minimized ? 'hidden' : 'visible',
+        borderColor: active ? 'var(--active-border)' : 'var(--border)',
+        boxShadow: win.maximized ? 'none' : 'var(--shadow)',
       }}
       onPointerDown={() => focus(win.id)}
       className={`absolute flex flex-col overflow-hidden border bg-[var(--surface)] glass ${
-        win.maximized ? 'rounded-none' : 'rounded-[var(--radius)] shadow-2xl'
-      } ${active ? 'border-[var(--accent)]/60' : 'border-white/10'}`}
+        win.maximized ? 'rounded-none' : 'rounded-[var(--radius)]'
+      }`}
     >
       <header
-        className="flex h-9 shrink-0 cursor-default items-center gap-2 bg-white/5 pr-1 pl-3 select-none"
+        style={{ height: 'var(--titlebar)' }}
+        className="flex shrink-0 cursor-default items-center gap-2 bg-white/5 pr-1 pl-3 select-none"
         onPointerDown={startDrag}
         onPointerMove={onDrag}
         onPointerUp={endDrag}

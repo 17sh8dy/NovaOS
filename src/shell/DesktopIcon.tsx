@@ -8,6 +8,8 @@ export interface DesktopIconProps {
   title?: string;
   icon: LucideIcon;
   iconPx: number;
+  /** Show the name under the icon. */
+  showLabel?: boolean;
   /** Tint for the glyph; defaults to the accent color. */
   iconClass?: string;
   selected: boolean;
@@ -16,6 +18,7 @@ export interface DesktopIconProps {
   open: () => void;
   /** Lets the desktop measure this icon for drag-selection. */
   register: (id: string, el: HTMLElement | null) => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
 }
 
 /**
@@ -25,17 +28,19 @@ export interface DesktopIconProps {
 export function DesktopIcon(p: DesktopIconProps) {
   const openProps = useOpenProps();
   const open = openProps(p.open);
+  const showLabel = p.showLabel ?? true;
   return (
     <button
       ref={(el) => p.register(p.id, el)}
       aria-label={p.ariaLabel}
       aria-pressed={p.selected}
-      title={p.title}
+      title={p.title ?? (showLabel ? undefined : p.label)}
       onClick={(e) => {
         p.onSelect(p.id, e.ctrlKey || e.metaKey);
         open.onClick?.();
       }}
       onDoubleClick={open.onDoubleClick}
+      onContextMenu={p.onContextMenu}
       onKeyDown={(e) => e.key === 'Enter' && p.open()}
       style={
         p.selected
@@ -45,10 +50,12 @@ export function DesktopIcon(p: DesktopIconProps) {
             }
           : undefined
       }
-      className="flex w-20 flex-col items-center gap-1 rounded-lg p-2 text-[11px] hover:bg-white/10 focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--selection)]"
+      className={`flex flex-col items-center gap-1 rounded-lg p-2 text-[11px] hover:bg-white/10 focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--selection)] ${
+        showLabel ? 'w-20' : 'w-auto'
+      }`}
     >
       <p.icon size={p.iconPx} className={p.iconClass ?? 'text-[var(--accent)]'} />
-      <span className="text-center leading-tight">{p.label}</span>
+      {showLabel && <span className="text-center leading-tight">{p.label}</span>}
     </button>
   );
 }

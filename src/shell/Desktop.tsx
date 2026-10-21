@@ -1,21 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { MotionConfig } from 'motion/react';
-import { listApps } from '../kernel/appRegistry';
+import { getApp } from '../kernel/appRegistry';
 import { launchApp, setDesktopSize } from '../kernel/launcher';
 import { useWindows, type Size } from '../kernel/windowStore';
-import {
-  CORNER_PX,
-  ICON_PX,
-  accentColor,
-  selectionColor,
-  taskbarHeight,
-  wallpaperFile,
-} from '../settings/schema';
+import { ICON_PX, taskbarReserved, wallpaperFile } from '../settings/schema';
+import { playSound } from '../settings/sounds';
 import { useSettings } from '../settings/store';
-import { useWallpaperImage, wallpaperStyle } from '../settings/wallpaper';
+import { themeAttrs, themeStyle } from '../settings/theme';
+import { useWallpaperImage } from '../settings/wallpaper';
+import { ClickRipple } from './ClickRipple';
+import { useContextMenu } from './ContextMenu';
 import { DesktopIcon } from './DesktopIcon';
 import { RecycleBin } from './RecycleBin';
 import { isExitChord, useDisplay } from './displayMode';
+import { appMenuItems } from './pinMenu';
 import {
   boxFrom,
   clampPoint,
@@ -42,10 +40,12 @@ export function Desktop() {
   const [size, setSize] = useState<Size>({ width: 1024, height: 640 });
   const windows = useWindows((s) => s.windows);
   const { data, loaded, load } = useSettings();
-  const { appearance, desktop, accessibility, general } = data;
+  const pin = useSettings((s) => s.pin);
+  const { appearance, desktop, accessibility, general, cursor, motion } = data;
   const closeStart = useShell((s) => s.closeStart);
   const { mode, setMode, exitImmersive } = useDisplay();
   const startedImmersive = useRef(false);
+  const { open: openMenu, menu } = useContextMenu();
 
   const image = useWallpaperImage(wallpaperFile(appearance.wallpaper));
 
@@ -123,6 +123,36 @@ export function Desktop() {
     return () => document.removeEventListener('fullscreenchange', onChange);
   }, []);
 
+  // Sounds for windows opening, closing, minimizing and restoring. Silent unless turned on.
+  useEffect(() => {
+    return useWindows.subscribe((state, prev) => {
+      const sounds = useSettings.getState().data.sounds;
+      if (!sounds.enabled) return;
+      const now = Object.keys(state.windows);
+      const before = Object.keys(prev.windows);
+      if (now.some((id) => !before.includes(id))) playSound('open', sounds);
+      else if (before.some((id) => !now.includes(id))) playSound('close', sounds);
+      else {
+        for (const id of now) {
+          const a = prev.windows[id]?.minimized;
+          const b = state.windows[id]?.minimized;
+          if (a === false && b === true) playSound('minimize', sounds);
+          if (a === true && b === false) playSound('restore', sounds);
+        }
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    const onDown = (e: PointerEvent) => {
+      if ((e.target as HTMLElement | null)?.closest?.('button')) {
+        playSound('click', useSettings.getState().data.sounds);
+      }
+    };
+    window.addEventListener('pointerdown', onDown, true);
+    return () => window.removeEventListener('pointerdown', onDown, true);
+  }, []);
+
   const launch = useCallback((appId: string) => void launchApp(appId), []);
 
   // ---- drag-to-select on empty desktop
@@ -170,64 +200,69 @@ export function Desktop() {
     setBox(null);
   };
 
-  const barHeight = taskbarHeight(desktop.taskbarSize);
+  const reserved = taskbarReserved(desktop);
   const barOnTop = desktop.taskbarPosition === 'top';
-  const apps = listApps().filter((a) => a.pinned && !desktop.unpinned.includes(a.id));
+  const apps = desktop.desktopPinned.map((id) => getApp(id)).filter((a) => a && !a.hidden);
   const iconPx = ICON_PX[desktop.iconSize];
-
-  const vars = {
-    ...wallpaperStyle(appearance, image),
-    '--accent': accentColor(appearance.accent),
-    '--selection': selectionColor(appearance),
-    '--surface': `rgb(20 22 34 / ${accessibility.highContrast ? 1 : appearance.windowOpacity})`,
-    '--blur': `${appearance.blur}px`,
-    '--radius': `${CORNER_PX[appearance.corners]}px`,
-  } as React.CSSProperties;
 
   return (
     <MotionConfig reducedMotion={accessibility.reduceMotion ? 'always' : 'user'}>
       <div
         data-testid="desktop"
         data-mode={mode}
-        data-contrast={accessibility.highContrast ? 'high' : 'normal'}
-        data-motion={accessibility.reduceMotion ? 'reduced' : 'normal'}
+        {...themeAttrs(data)}
         className="relative h-screen w-screen overflow-hidden text-white select-none"
-        style={vars}
+        style={themeStyle(data, image)}
         onPointerDown={closeStart}
+        onContextMenu={(e) => {
+          // Our own menus replace the browser's; text fields keep theirs (copy/paste).
+          if (!(e.target as HTMLElement).closest('input, textarea')) e.preventDefault();
+        }}
       >
         <div
           ref={layer}
           data-testid="desktop-layer"
           className="absolute inset-x-0"
-          style={barOnTop ? { top: barHeight, bottom: 0 } : { top: 0, bottom: barHeight }}
+          style={barOnTop ? { top: reserved, bottom: 0 } : { top: 0, bottom: reserved }}
           onPointerDown={onLayerDown}
           onPointerMove={onLayerMove}
           onPointerUp={endDrag}
           onPointerCancel={endDrag}
         >
-          <div className="absolute top-3 left-3 flex flex-col gap-2" data-testid="desktop-icons">
+          <div
+            className="absolute top-3 left-3 flex flex-col"
+            style={{ gap: 'var(--icon-gap)' }}
+            data-testid="desktop-icons"
+          >
             {/* The Recycle Bin is part of the desktop itself: it ignores "Show desktop icons" and pinning. */}
             <RecycleBin
               iconPx={iconPx}
+              showLabel={desktop.iconLabels}
               selected={selected.includes('recycle-bin')}
               onSelect={select}
               register={register}
             />
             {desktop.showDesktopIcons &&
-              apps.map((a) => (
-                <DesktopIcon
-                  key={a.id}
-                  id={a.id}
-                  label={a.title.replace('Nova ', '')}
-                  ariaLabel={`${a.title} shortcut`}
-                  icon={a.icon}
-                  iconPx={iconPx}
-                  selected={selected.includes(a.id)}
-                  onSelect={select}
-                  open={() => launch(a.id)}
-                  register={register}
-                />
-              ))}
+              apps.map((a) =>
+                a ? (
+                  <DesktopIcon
+                    key={a.id}
+                    id={a.id}
+                    label={a.title.replace('Nova ', '')}
+                    ariaLabel={`${a.title} shortcut`}
+                    icon={a.icon}
+                    iconPx={iconPx}
+                    showLabel={desktop.iconLabels}
+                    selected={selected.includes(a.id)}
+                    onSelect={select}
+                    open={() => launch(a.id)}
+                    register={register}
+                    onContextMenu={(e) =>
+                      openMenu(e, appMenuItems(a, data, { open: () => launch(a.id), pin }))
+                    }
+                  />
+                ) : null,
+              )}
           </div>
           {Object.values(windows).map((w) => (
             <Window key={w.id} win={w} desktop={size} />
@@ -251,6 +286,8 @@ export function Desktop() {
         </div>
         <StartMenu launch={launch} />
         <Taskbar launch={launch} />
+        <ClickRipple enabled={cursor.ripple && !accessibility.reduceMotion} speed={motion.speed} />
+        {menu}
       </div>
     </MotionConfig>
   );

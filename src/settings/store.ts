@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { storageGet, storageSet } from '../native/storage';
+import { movePinned, setPinned, type PinPlace } from './pins';
 import {
   DEFAULTS,
   exportSettings,
@@ -19,6 +20,12 @@ interface SettingsState {
   /** Change one section's fields. Values are validated; invalid ones are ignored. */
   set: <S extends keyof SettingsData>(section: S, patch: Partial<SettingsData[S]>) => void;
   reset: () => void;
+  /** Replace everything at once (Studio undo/redo/apply). Validated like any other change. */
+  setAll: (data: SettingsData) => void;
+  /** Pin or unpin an app on the taskbar or the desktop. */
+  pin: (place: PinPlace, appId: string, pinned: boolean) => void;
+  /** Reorder a pinned app. */
+  movePin: (place: PinPlace, appId: string, delta: -1 | 1) => void;
   /** Replace everything from exported JSON. Throws a readable Error if it isn't one. */
   importJson: (text: string) => void;
   exportJson: () => string;
@@ -64,6 +71,26 @@ export const useSettings = create<SettingsState>((set, get) => ({
 
   set: (section, patch) => {
     const data = patchSection(get().data, section, patch);
+    set({ data });
+    scheduleSave(data);
+  },
+
+  setAll: (next) => {
+    const data = sanitize(next);
+    set({ data });
+    scheduleSave(data);
+  },
+
+  pin: (place, appId, pinned) => {
+    const data = setPinned(get().data, place, appId, pinned);
+    if (data === get().data) return;
+    set({ data });
+    scheduleSave(data);
+  },
+
+  movePin: (place, appId, delta) => {
+    const data = movePinned(get().data, place, appId, delta);
+    if (data === get().data) return;
     set({ data });
     scheduleSave(data);
   },

@@ -103,10 +103,11 @@ describe('Recycle Bin', () => {
     expect(nativeMock).toHaveBeenCalledWith('open_recycle_bin');
   });
 
-  it('stays on the desktop when desktop icons are hidden, and every app is unpinned', () => {
+  it('stays on the desktop when desktop icons are hidden, and nothing is pinned', () => {
     useSettings.getState().set('desktop', {
       showDesktopIcons: false,
-      unpinned: ['files', 'settings', 'notes', 'calculator'],
+      desktopPinned: [],
+      taskbarPinned: [],
     });
     render(<Desktop />);
     expect(screen.getByLabelText('Recycle Bin')).toBeInTheDocument();
@@ -117,7 +118,7 @@ describe('Recycle Bin', () => {
     useSettings
       .getState()
       .importJson(
-        '{"app":"novaos","version":1,"settings":{"desktop":{"showDesktopIcons":false,"unpinned":["recycle-bin","recycle","bin"]}}}',
+        '{"app":"novaos","version":1,"settings":{"desktop":{"showDesktopIcons":false,"desktopPinned":["recycle-bin","recycle","bin"]}}}',
       );
     render(<Desktop />);
     expect(screen.getByLabelText('Recycle Bin')).toBeInTheDocument();

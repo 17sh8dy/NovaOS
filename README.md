@@ -88,3 +88,22 @@ Nova Files → **Import** brings Windows/Linux files and folders in through the 
   wallpaper sends it to the Recycle Bin.
 - **Selection rectangle**: drag on the empty desktop to box-select icons (Ctrl adds). Color
   follows the accent or is custom; fill strength and an on/off switch are in Appearance.
+
+## Nova Studio
+
+One app for every customization (Settings keeps system pages: General, Files & Storage,
+Keyboard shortcuts, Privacy & Security, Data & Backup, About).
+
+- **Studios** in one window: Themes, Windows, Taskbar, Desktop, Motion, Cursor, Sounds, Interface,
+  plus Home and Library. Every control is defined once in `apps/studio/controls.tsx`; the studio
+  pages, global search and Home favorites all render from that list.
+- **Live preview**: a miniature desktop rendered with the same `themeStyle()` the real desktop
+  uses. Hover it to try your pointer; click it to try ripples.
+- **Instant or Draft**: changes apply as you make them (with Undo/Redo, Ctrl+Z) or wait in the
+  preview until Apply. **Advanced** adds exact number and hex fields.
+- **Favorites** (star any setting), **Library** of built-in and saved looks, share a look as text or
+  a `.novalook.json` file in Nova Files → Documents (custom wallpapers are not included).
+- Real effects only: custom SVG pointer, click ripples, synthesized UI sounds (off by default),
+  window shadow/title bar/border/animation/speed, floating taskbar, icon labels and spacing, fonts,
+  and per-app pinning to the taskbar and desktop (Start-menu buttons, right-click, or Studio).
+- Settings are validated by `sanitize()` (schema v2); old `unpinned` data migrates automatically.

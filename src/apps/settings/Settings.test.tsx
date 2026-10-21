@@ -47,10 +47,10 @@ describe('Settings app', () => {
     const user = userEvent.setup();
     render(<Settings />);
     const nav = screen.getByRole('navigation', { name: 'Settings sections' });
-    await user.type(screen.getByLabelText('Search settings'), 'blur');
-    expect(within(nav).getByText('Appearance')).toBeInTheDocument();
+    await user.type(screen.getByLabelText('Search settings'), 'recycle');
+    expect(within(nav).getByText('Files & Storage')).toBeInTheDocument();
     expect(within(nav).queryByText('General')).not.toBeInTheDocument();
-    expect(screen.getByRole('region', { name: 'Appearance' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Files & Storage' })).toBeInTheDocument();
     await user.clear(screen.getByLabelText('Search settings'));
     await user.type(screen.getByLabelText('Search settings'), 'zzzz');
     expect(screen.getByText('No settings match.')).toBeInTheDocument();
@@ -79,11 +79,13 @@ describe('Settings app', () => {
     expect(data().general.singleClickOpen).toBe(true);
     // Settings controls and navigation respond to ONE click in both modes.
     await user.click(
-      within(screen.getByRole('navigation', { name: 'Settings sections' })).getByText('Appearance'),
+      within(screen.getByRole('navigation', { name: 'Settings sections' })).getByText(
+        'Files & Storage',
+      ),
     );
-    expect(screen.getByRole('region', { name: 'Appearance' })).toBeInTheDocument();
-    await user.click(screen.getByLabelText('accent teal'));
-    expect(data().appearance.accent).toBe('teal');
+    expect(screen.getByRole('region', { name: 'Files & Storage' })).toBeInTheDocument();
+    await user.click(screen.getByRole('switch', { name: 'Show file sizes' }));
+    expect(data().files.showSizes).toBe(false);
     await user.click(
       within(screen.getByRole('navigation', { name: 'Settings sections' })).getByText('General'),
     );
@@ -94,30 +96,6 @@ describe('Settings app', () => {
   it('General: Shell Mode is shown but cannot be chosen', () => {
     render(<Settings />);
     expect(screen.getByRole('radio', { name: 'Shell (soon)' })).toBeDisabled();
-  });
-
-  it('Appearance: accent, wallpaper, opacity, blur and corners all save', async () => {
-    const user = userEvent.setup();
-    render(<Settings />);
-    await user.click(screen.getByText('Appearance'));
-    await user.click(screen.getByLabelText('accent teal'));
-    await user.click(screen.getByLabelText('wallpaper ocean'));
-    await user.click(screen.getByRole('radio', { name: 'Sharp' }));
-    expect(data().appearance).toMatchObject({
-      accent: 'teal',
-      wallpaper: 'ocean',
-      corners: 'sharp',
-    });
-    const opacity = screen.getByLabelText('Window opacity') as HTMLInputElement;
-    const { fireEvent } = await import('@testing-library/react');
-    fireEvent.change(opacity, { target: { value: '0.6' } });
-    fireEvent.change(screen.getByLabelText('Background blur'), { target: { value: '0' } });
-    expect(data().appearance.windowOpacity).toBe(0.6);
-    expect(data().appearance.blur).toBe(0);
-    fireEvent.change(screen.getByLabelText('custom accent color'), {
-      target: { value: '#12abef' },
-    });
-    expect(data().appearance.accent).toBe('#12abef');
   });
 
   it('Data & Backup: pasted settings are applied, junk is rejected with a reason, reset needs confirming', async () => {
@@ -175,18 +153,6 @@ describe('settings are applied to the desktop', () => {
         expect(screen.queryByLabelText('Nova Notes shortcut')).not.toBeInTheDocument();
         expect(screen.getByLabelText('Recycle Bin')).toBeInTheDocument(); // never hidden
       });
-  });
-
-  it('unpinning an app removes it from the taskbar and the desktop but not the Start menu', async () => {
-    const user = userEvent.setup();
-    render(<Desktop />);
-    expect(screen.getByLabelText('Open Nova Notes')).toBeInTheDocument();
-    useSettings.getState().set('desktop', { unpinned: ['notes'] });
-    await Promise.resolve();
-    expect(screen.queryByLabelText('Open Nova Notes')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Nova Notes shortcut')).not.toBeInTheDocument();
-    await user.click(screen.getByLabelText('Start'));
-    expect(within(screen.getByRole('menu')).getByText('Nova Notes')).toBeInTheDocument();
   });
 
   it('accent, opacity, blur, corners, contrast and motion reach the page as CSS', async () => {
