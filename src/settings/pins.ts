@@ -24,6 +24,21 @@ export function setPinned(
   });
 }
 
+/** Drop a pinned app into the slot another pinned app holds (drag and drop). */
+export function reorderPinned(
+  data: SettingsData,
+  place: PinPlace,
+  id: string,
+  targetId: string,
+): SettingsData {
+  const cur = [...pinsFor(data, place)];
+  const from = cur.indexOf(id);
+  const to = cur.indexOf(targetId);
+  if (from < 0 || to < 0 || from === to) return data;
+  cur.splice(to, 0, ...cur.splice(from, 1));
+  return patchSection(data, 'desktop', { [key(place)]: cur });
+}
+
 /** Move a pinned app earlier (-1) or later (+1). Stops at the ends. */
 export function movePinned(
   data: SettingsData,

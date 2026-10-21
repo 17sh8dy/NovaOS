@@ -47,6 +47,44 @@ export function Desktop() {
   const windows = useWindows((s) => s.windows);
   const { data, loaded, load } = useSettings();
   const pin = useSettings((s) => s.pin);
+  const reorderPin = useSettings((s) => s.reorderPin);
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [overId, setOverId] = useState<string | null>(null);
+
+  // Drag an icon onto another to take its place. Pointer-based (not HTML5 drag and drop, which the
+  // desktop shell reserves for files). A drag never counts as a click.
+  const startIconDrag = (e: React.PointerEvent, id: string) => {
+    if (e.button !== 0) return;
+    const start = { x: e.clientX, y: e.clientY };
+    let moved = false;
+    let over: string | null = null;
+    const onMove = (m: PointerEvent) => {
+      if (!moved && Math.hypot(m.clientX - start.x, m.clientY - start.y) < 6) return;
+      if (!moved) {
+        moved = true;
+        setDragId(id);
+      }
+      const hit = document.elementFromPoint(m.clientX, m.clientY)?.closest('[data-icon-id]');
+      over = hit?.getAttribute('data-icon-id') ?? null;
+      setOverId(over);
+    };
+    const finish = () => {
+      window.removeEventListener('pointermove', onMove, true);
+      window.removeEventListener('pointerup', finish, true);
+      window.removeEventListener('pointercancel', finish, true);
+      if (moved) {
+        if (over && over !== id) reorderPin('desktop', id, over);
+        const swallow = (c: Event) => c.stopPropagation();
+        window.addEventListener('click', swallow, { capture: true, once: true });
+        window.setTimeout(() => window.removeEventListener('click', swallow, true), 0);
+      }
+      setDragId(null);
+      setOverId(null);
+    };
+    window.addEventListener('pointermove', onMove, true);
+    window.addEventListener('pointerup', finish, true);
+    window.addEventListener('pointercancel', finish, true);
+  };
   const { appearance, desktop, accessibility, general, cursor, motion } = data;
   const closeStart = useShell((s) => s.closeStart);
   const { mode, setMode, exitImmersive } = useDisplay();
@@ -270,6 +308,10 @@ export function Desktop() {
                     onSelect={select}
                     open={() => launch(a.id)}
                     register={register}
+                    dnd={{
+                      over: dragId !== null && dragId !== a.id && overId === a.id,
+                      onPointerDown: (e) => startIconDrag(e, a.id),
+                    }}
                     onContextMenu={(e) =>
                       openMenu(e, appMenuItems(a, data, { open: () => launch(a.id), pin }))
                     }

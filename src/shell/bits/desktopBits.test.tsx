@@ -205,3 +205,69 @@ describe('a custom cursor file on the desktop', () => {
     expect(screen.queryByTestId('nova-cursor')).not.toBeInTheDocument();
   });
 });
+
+describe('rearranging desktop icons', () => {
+  const names = () =>
+    screen
+      .getAllByRole('button', { name: /shortcut$/ })
+      .map((b) => b.getAttribute('aria-label')?.replace(' shortcut', ''));
+
+  const drag = (from: HTMLElement, to: HTMLElement | null, distance = 40) => {
+    document.elementFromPoint = () => to;
+    fireEvent.pointerDown(from, { button: 0, clientX: 10, clientY: 10 });
+    fireEvent.pointerMove(window, { clientX: 10, clientY: 10 + distance });
+    fireEvent.pointerUp(window, { clientX: 10, clientY: 10 + distance });
+  };
+
+  it('dragging an icon onto another moves it there, and it is remembered', () => {
+    render(<Desktop />);
+    expect(names()[0]).toBe('Nova Files');
+    const files = screen.getByRole('button', { name: 'Nova Files shortcut' });
+    const calc = screen.getByRole('button', { name: 'Nova Calculator shortcut' });
+    drag(files, calc);
+    expect(useSettings.getState().data.desktop.desktopPinned).toEqual([
+      'notes',
+      'calculator',
+      'files',
+      'studio',
+      'settings',
+    ]);
+    expect(names().slice(0, 3)).toEqual(['Nova Notes', 'Nova Calculator', 'Nova Files']);
+  });
+
+  it('a drag is not a click: nothing opens', () => {
+    render(<Desktop />);
+    const files = screen.getByRole('button', { name: 'Nova Files shortcut' });
+    drag(files, screen.getByRole('button', { name: 'Nova Notes shortcut' }));
+    fireEvent.click(files);
+    expect(Object.keys(useWindows.getState().windows)).toHaveLength(0);
+  });
+
+  it('a tiny wobble while clicking is not a drag', () => {
+    render(<Desktop />);
+    const files = screen.getByRole('button', { name: 'Nova Files shortcut' });
+    drag(files, screen.getByRole('button', { name: 'Nova Notes shortcut' }), 3);
+    expect(useSettings.getState().data.desktop.desktopPinned[0]).toBe('files');
+  });
+
+  it('dropping on itself, on empty desktop, or with the right button changes nothing', () => {
+    render(<Desktop />);
+    const files = screen.getByRole('button', { name: 'Nova Files shortcut' });
+    drag(files, files);
+    drag(files, null);
+    document.elementFromPoint = () => screen.getByRole('button', { name: 'Nova Notes shortcut' });
+    fireEvent.pointerDown(files, { button: 2, clientX: 10, clientY: 10 });
+    fireEvent.pointerMove(window, { clientX: 10, clientY: 80 });
+    fireEvent.pointerUp(window);
+    expect(useSettings.getState().data.desktop.desktopPinned[0]).toBe('files');
+  });
+
+  it('the Recycle Bin stays put and cannot be dragged or dropped on', () => {
+    render(<Desktop />);
+    const bin = screen.getByRole('button', { name: 'Recycle Bin' });
+    const files = screen.getByRole('button', { name: 'Nova Files shortcut' });
+    drag(bin, files);
+    drag(files, bin);
+    expect(useSettings.getState().data.desktop.desktopPinned[0]).toBe('files');
+  });
+});

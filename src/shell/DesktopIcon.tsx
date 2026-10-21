@@ -20,6 +20,11 @@ export interface DesktopIconProps {
   /** Lets the desktop measure this icon for drag-selection. */
   register: (id: string, el: HTMLElement | null) => void;
   onContextMenu?: (e: React.MouseEvent) => void;
+  /** Drag and drop to rearrange. Omitted for icons that can't move (the Recycle Bin). */
+  dnd?: {
+    over: boolean;
+    onPointerDown: (e: React.PointerEvent) => void;
+  };
 }
 
 /**
@@ -33,6 +38,8 @@ export function DesktopIcon(p: DesktopIconProps) {
   return (
     <button
       ref={(el) => p.register(p.id, el)}
+      data-icon-id={p.id}
+      onPointerDown={p.dnd?.onPointerDown}
       aria-label={p.ariaLabel}
       data-bit="magnet chroma"
       aria-pressed={p.selected}
@@ -45,12 +52,14 @@ export function DesktopIcon(p: DesktopIconProps) {
       onContextMenu={p.onContextMenu}
       onKeyDown={(e) => e.key === 'Enter' && p.open()}
       style={
-        p.selected
-          ? {
-              background: 'color-mix(in srgb, var(--selection) 28%, transparent)',
-              boxShadow: 'inset 0 0 0 1px var(--selection)',
-            }
-          : undefined
+        p.dnd?.over
+          ? { boxShadow: 'inset 0 0 0 2px var(--accent)', background: 'rgb(255 255 255 / 0.1)' }
+          : p.selected
+            ? {
+                background: 'color-mix(in srgb, var(--selection) 28%, transparent)',
+                boxShadow: 'inset 0 0 0 1px var(--selection)',
+              }
+            : undefined
       }
       className={`flex flex-col items-center gap-1 rounded-lg p-2 text-[11px] hover:bg-white/10 focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--selection)] ${
         showLabel ? 'w-20' : 'w-auto'

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { storageGet, storageSet } from '../native/storage';
-import { movePinned, setPinned, type PinPlace } from './pins';
+import { movePinned, reorderPinned, setPinned, type PinPlace } from './pins';
 import {
   DEFAULTS,
   exportSettings,
@@ -24,6 +24,8 @@ interface SettingsState {
   setAll: (data: SettingsData) => void;
   /** Pin or unpin an app on the taskbar or the desktop. */
   pin: (place: PinPlace, appId: string, pinned: boolean) => void;
+  /** Drop a pinned app into another pinned app's slot. */
+  reorderPin: (place: PinPlace, appId: string, targetId: string) => void;
   /** Reorder a pinned app. */
   movePin: (place: PinPlace, appId: string, delta: -1 | 1) => void;
   /** Replace everything from exported JSON. Throws a readable Error if it isn't one. */
@@ -83,6 +85,13 @@ export const useSettings = create<SettingsState>((set, get) => ({
 
   pin: (place, appId, pinned) => {
     const data = setPinned(get().data, place, appId, pinned);
+    if (data === get().data) return;
+    set({ data });
+    scheduleSave(data);
+  },
+
+  reorderPin: (place, appId, targetId) => {
+    const data = reorderPinned(get().data, place, appId, targetId);
     if (data === get().data) return;
     set({ data });
     scheduleSave(data);
