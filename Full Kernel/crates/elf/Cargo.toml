@@ -1,0 +1,6 @@
+[package]
+name = "nova-elf"
+description = "A small, bounds-checked ELF64 reader for loading the Nova kernel."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true

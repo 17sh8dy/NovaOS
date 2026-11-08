@@ -1,0 +1,6 @@
+[package]
+name = "nova-x86"
+description = "x86_64 CPU helpers shared by NovaBoot and the Nova kernel: port I/O, serial, MSRs, control registers."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true

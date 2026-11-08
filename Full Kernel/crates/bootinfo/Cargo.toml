@@ -1,0 +1,6 @@
+[package]
+name = "nova-bootinfo"
+description = "The Nova boot protocol: what NovaBoot hands to the kernel."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true

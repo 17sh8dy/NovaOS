@@ -1,0 +1,6 @@
+[package]
+name = "nova-paging"
+description = "x86_64 4-level page table builder that works from a fixed pool of tables."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true

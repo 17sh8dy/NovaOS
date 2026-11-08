@@ -1,0 +1,16 @@
+[package]
+name = "nova-kernel"
+description = "The Nova kernel."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "nova-kernel"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+nova-bootinfo = { path = "../crates/bootinfo" }
+nova-x86 = { path = "../crates/x86" }

@@ -1,0 +1,25 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/bootinfo",
+    "crates/elf",
+    "crates/paging",
+    "crates/x86",
+    "boot",
+    "kernel",
+]
+# `cargo test` from the root runs the host-testable libraries only.
+# The bootloader and kernel are built for their own targets by tools/build.ps1.
+default-members = ["crates/bootinfo", "crates/elf", "crates/paging"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+debug = 1

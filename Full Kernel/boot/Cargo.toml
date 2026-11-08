@@ -1,0 +1,18 @@
+[package]
+name = "nova-boot"
+description = "NovaBoot: the UEFI bootloader for the Nova kernel."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "nova-boot"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+nova-bootinfo = { path = "../crates/bootinfo" }
+nova-elf = { path = "../crates/elf" }
+nova-paging = { path = "../crates/paging" }
+nova-x86 = { path = "../crates/x86" }

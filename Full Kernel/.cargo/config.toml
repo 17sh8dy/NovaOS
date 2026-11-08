@@ -1,0 +1,4 @@
+# The kernel is linked at 0xFFFFFFFF80000000 (top 2 GiB), which needs the
+# "kernel" code model and non-PIC code. The UEFI target needs no extra flags.
+[target.x86_64-unknown-none]
+rustflags = ["-C", "code-model=kernel", "-C", "relocation-model=static"]
