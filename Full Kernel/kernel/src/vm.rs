@@ -241,6 +241,29 @@ pub fn reclaim_loader_memory() -> usize {
     freed.saturating_sub(info.kernel_pages as usize + info.stack_pages as usize)
 }
 
+/// Page-cache-disable + write-through: with the default PAT this is
+/// *uncached*, which is what device registers need.
+const UNCACHED: u64 = (1 << 4) | PWT;
+
+/// Maps device registers (MMIO) uncached, at their usual direct-map address
+/// (`physical offset + phys`). Returns the virtual address of `phys`.
+/// Mapping the same page twice is fine.
+pub fn map_mmio(phys: u64, bytes: u64) -> Result<u64, MapError> {
+    let direct = bootdata::info().physical_memory_offset;
+    let first = phys & !(PAGE_SIZE - 1);
+    let end = (phys + bytes).next_multiple_of(PAGE_SIZE);
+    let nx = if bootdata::info().nx_enabled != 0 { NO_EXECUTE } else { 0 };
+    let mut page = first;
+    while page < end {
+        match map_page(direct + page, page, WRITABLE | nx | UNCACHED) {
+            Ok(()) | Err(MapError::AlreadyMapped(_)) => {}
+            Err(e) => return Err(e),
+        }
+        page += PAGE_SIZE;
+    }
+    Ok(direct + phys)
+}
+
 /// Maps one 4 KiB page in the kernel's address space.
 pub fn map_page(virt: u64, phys: u64, flags: u64) -> Result<(), MapError> {
     let r = SPACE.with(|s| s.as_mut().ok_or(MapError::Corrupt(0))?.map_4k(virt, phys, flags));

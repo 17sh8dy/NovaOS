@@ -41,7 +41,8 @@ try {
         @{ Kind = 'null';  Expect = @('#PF page fault', '0x0000000000000000', 'page not present, read') },
         @{ Kind = 'lowmem'; Expect = @('#PF page fault', '0x0000000000100000', 'page not present, read') },
         @{ Kind = 'ro';    Expect = @('#PF page fault', 'protection violation, write') },
-        @{ Kind = 'nx';    Expect = @('#PF page fault', 'instruction fetch') }
+        @{ Kind = 'nx';    Expect = @('#PF page fault', 'instruction fetch') },
+        @{ Kind = 'stray'; Expect = @('irq: stray interrupt on vector 0x81', 'NOVA KERNEL READY') }
     )
     try {
         foreach ($f in $faults) {

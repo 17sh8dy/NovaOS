@@ -18,3 +18,5 @@ nova-pmm = { path = "../crates/pmm" }
 nova-paging = { path = "../crates/paging" }
 nova-heap = { path = "../crates/heap" }
 nova-ps2 = { path = "../crates/ps2" }
+nova-acpi = { path = "../crates/acpi" }
+nova-apic = { path = "../crates/apic" }

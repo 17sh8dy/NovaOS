@@ -1,0 +1,6 @@
+[package]
+name = "nova-apic"
+description = "Local APIC / IO-APIC register encodings and timer maths (pure logic)."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true

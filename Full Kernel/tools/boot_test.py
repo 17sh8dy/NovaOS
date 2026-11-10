@@ -27,6 +27,7 @@ MUST_SEE = [
     "Nova kernel",                    # kernel's first line
     "memory map:",                    # kernel read the BootInfo
     "breakpoint self-test passed",    # stage 2: own IDT works
+    "timer: tick test passed",        # stage 5: APIC timer + interrupts work
     "pmm: self-test passed",          # stage 3: frame allocator works on real memory
     "NOVA KERNEL READY",              # kernel finished
 ]
@@ -136,6 +137,18 @@ def mouse_test(qmp, serial, start=(640, 400), move=(100, 50)) -> str | None:
             want = f"mouse: {btn} button {'down' if down else 'up'} at ({x}, {y})"
             if not wait_for(want):
                 return f"expected {want!r}"
+
+    # The mouse above arrived by interrupt (the kernel does not poll), and the
+    # CPU must be sleeping between interrupts: about one wake-up per 10 ms tick.
+    if not wait_for("idle: up", 15):
+        return "the kernel never reported its idle statistics"
+    m = re.search(r"idle: up (\d+) s, (\d+) wakeups from hlt, (\d+) stray \+ (\d+) spurious", read_log(serial))
+    secs, wakeups, stray = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    if not (secs * 60 <= wakeups <= secs * 160):
+        return f"idle loop woke {wakeups} times in {secs} s (expected ~{secs * 100}): the CPU is not sleeping properly"
+    if stray:
+        return f"{stray} stray interrupts"
+    print(f"Idle: {wakeups} hlt wake-ups in {secs} s (about one per timer tick), no stray interrupts")
     return None
 
 

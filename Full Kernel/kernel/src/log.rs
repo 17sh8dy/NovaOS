@@ -1,7 +1,8 @@
 //! Kernel logging to COM1.
 //!
-//! There is one CPU and interrupts are off, but the log already sits behind
-//! a spinlock so it stays correct once interrupts and more cores arrive.
+//! The log sits behind a spinlock. The lock also *disables interrupts while
+//! held*: with one CPU, an interrupt handler that logs while the code it
+//! interrupted holds the lock would otherwise wait for it forever.
 
 use core::cell::UnsafeCell;
 use core::fmt::{self, Write};
@@ -22,12 +23,17 @@ impl<T> SpinLock<T> {
     }
 
     pub fn with<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        let irq_were_on = nova_x86::interrupts_enabled();
+        nova_x86::cli();
         while self.locked.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
             core::hint::spin_loop();
         }
         // SAFETY: we hold the lock.
         let r = f(unsafe { &mut *self.value.get() });
         self.locked.store(false, Ordering::Release);
+        if irq_were_on {
+            nova_x86::sti();
+        }
         r
     }
 

@@ -203,6 +203,36 @@ pub fn read_cr4() -> u64 {
     v
 }
 
+/// Enables maskable interrupts.
+#[inline]
+pub fn sti() {
+    unsafe { asm!("sti", options(nomem, nostack)) }
+}
+
+/// Enables interrupts and halts until the next one, as one uninterruptible
+/// step (`sti` takes effect only after the following instruction, so an
+/// interrupt cannot slip in between and leave the CPU asleep with work pending).
+#[inline]
+pub fn sti_hlt() {
+    unsafe { asm!("sti", "hlt", options(nomem, nostack)) }
+}
+
+/// True if maskable interrupts are enabled (RFLAGS.IF).
+#[inline]
+pub fn interrupts_enabled() -> bool {
+    let flags: u64;
+    unsafe { asm!("pushfq", "pop {}", out(reg) flags, options(nomem, preserves_flags)) }
+    flags & (1 << 9) != 0
+}
+
+/// The CPU's time-stamp counter.
+#[inline]
+pub fn rdtsc() -> u64 {
+    let (lo, hi): (u32, u32);
+    unsafe { asm!("rdtsc", out("eax") lo, out("edx") hi, options(nomem, nostack, preserves_flags)) }
+    (hi as u64) << 32 | lo as u64
+}
+
 /// Disables maskable interrupts.
 #[inline]
 pub fn cli() {

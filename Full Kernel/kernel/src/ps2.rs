@@ -1,8 +1,11 @@
 //! The PS/2 controller (i8042) and the mouse on its second port.
 //!
-//! Polled, not interrupt driven: interrupts arrive with stage 5. The keyboard
-//! port is left disabled until the keyboard driver exists (stage 6), so
-//! the only bytes that ever show up are mouse bytes.
+//! Normally interrupt driven: the mouse raises ISA IRQ 12, the handler drains
+//! the controller into a small event queue, and the main loop sleeps (`hlt`)
+//! until something arrives. If the machine has no APIC the same code can be
+//! polled with [`pump`]. The keyboard port is left disabled until the
+//! keyboard driver exists (stage 6), so the only bytes that show up are mouse
+//! bytes.
 //!
 //! Packet decoding and pointer tracking are in `crates/ps2` (host-tested);
 //! this file is the part that talks to the hardware.
@@ -39,6 +42,58 @@ const CONFIG_CLEAR: u8 = (1 << 0) | (1 << 1) | (1 << 4) | (1 << 5) | (1 << 6);
 const SPIN: u32 = 200_000;
 
 static DECODER: SpinLock<Decoder> = SpinLock::new(Decoder::new(false));
+
+/// Events waiting for the main loop (oldest first). If it falls behind, the
+/// oldest are dropped: a pointer that lags is worse than one that skips.
+struct Queue {
+    buf: [MouseEvent; 64],
+    head: usize,
+    len: usize,
+}
+
+const NO_EVENT: MouseEvent = MouseEvent { dx: 0, dy: 0, wheel: 0, buttons: nova_ps2::Buttons(0) };
+static QUEUE: SpinLock<Queue> = SpinLock::new(Queue { buf: [NO_EVENT; 64], head: 0, len: 0 });
+
+impl Queue {
+    fn push(&mut self, ev: MouseEvent) {
+        let cap = self.buf.len();
+        if self.len == cap {
+            self.head = (self.head + 1) % cap; // drop the oldest
+            self.len -= 1;
+        }
+        self.buf[(self.head + self.len) % cap] = ev;
+        self.len += 1;
+    }
+
+    fn pop(&mut self) -> Option<MouseEvent> {
+        if self.len == 0 {
+            return None;
+        }
+        let ev = self.buf[self.head];
+        self.head = (self.head + 1) % self.buf.len();
+        self.len -= 1;
+        Some(ev)
+    }
+}
+
+/// Reads what the mouse has sent into the event queue.
+pub fn pump() {
+    poll(|ev| QUEUE.with(|q| q.push(ev)));
+}
+
+/// The IRQ 12 handler.
+pub fn irq_handler() {
+    pump();
+}
+
+/// The oldest queued mouse event, if any.
+pub fn pop() -> Option<MouseEvent> {
+    QUEUE.with(|q| q.pop())
+}
+
+pub fn has_events() -> bool {
+    QUEUE.with(|q| q.len > 0)
+}
 
 pub struct MouseInfo {
     /// Device ID: 0 = plain mouse, 3 = wheel, 4 = wheel + 5 buttons.
@@ -126,10 +181,12 @@ fn mouse_cmd_arg(cmd: u8, arg: u8) -> Result<(), &'static str> {
 }
 
 /// Initialises the controller and the mouse and starts mouse reporting.
+/// With `irq` the controller is also told to raise IRQ 12 (the caller must
+/// already have routed and registered it); otherwise use [`pump`].
 ///
 /// # Safety
 /// Call once; the kernel must own the PS/2 controller (I/O ports 0x60/0x64).
-pub unsafe fn init() -> Result<MouseInfo, &'static str> {
+pub unsafe fn init(irq: bool) -> Result<MouseInfo, &'static str> {
     // Quiet both ports while we configure the controller.
     command(CMD_DISABLE_KBD_PORT)?;
     command(CMD_DISABLE_MOUSE_PORT)?;
@@ -182,6 +239,9 @@ pub unsafe fn init() -> Result<MouseInfo, &'static str> {
     mouse_cmd_arg(0xF3, 100)?; // 100 reports per second
     mouse_cmd(0xF4)?; // start reporting
     flush();
+    if irq {
+        write_config(cfg | (1 << 1))?; // let the controller raise IRQ 12
+    }
     Ok(MouseInfo { id })
 }
 

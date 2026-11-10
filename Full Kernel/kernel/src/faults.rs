@@ -17,10 +17,11 @@
 //!   lowmem read of 1 MiB, which the bootloader identity-mapped -> #PF (that map is gone)
 //!   ro     write to the kernel's own code                  -> #PF, protection violation (W^X)
 //!   nx     jump into the heap                              -> #PF, instruction fetch (NX)
+//!   stray  software interrupt on a vector nobody owns      -> logged, then boot continues
 
 use core::arch::asm;
 
-pub const KINDS: [&str; 12] = ["div", "ud", "gp", "pf", "df", "stack", "nmi", "panic", "null", "lowmem", "ro", "nx"];
+pub const KINDS: [&str; 13] = ["div", "ud", "gp", "pf", "df", "stack", "nmi", "panic", "null", "lowmem", "ro", "nx", "stray"];
 
 unsafe extern "C" {
     static __text_start: u8;
@@ -55,6 +56,10 @@ pub fn run_if_requested() {
                 core::hint::black_box(recurse(0));
             }
             "nmi" => asm!("int 2"),
+            "stray" => {
+                asm!("int 0x81");
+                return;
+            }
             "null" => {
                 core::hint::black_box(core::ptr::null::<u8>().read_volatile());
             }

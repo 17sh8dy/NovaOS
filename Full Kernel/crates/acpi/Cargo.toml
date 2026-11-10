@@ -1,0 +1,6 @@
+[package]
+name = "nova-acpi"
+description = "ACPI table parsing (RSDP, RSDT/XSDT, MADT) over an abstract physical memory."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true

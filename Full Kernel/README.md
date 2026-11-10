@@ -37,6 +37,10 @@ back the bootloader's memory, and has a heap (`Box`, `Vec`, `String`). **PS/2 mo
 with it: boot in QEMU and move the mouse; a pointer follows it and a read-out shows its position.
 (Keyboard is next, with the console.)
 
+**Stage 5: interrupts + timer — done.** The kernel reads the firmware's ACPI tables, switches
+from the legacy PICs to the local APIC and IO-APIC, runs a calibrated 100 Hz timer, takes the
+mouse by interrupt, and idles with `hlt` instead of spinning. The pointer read-out shows uptime.
+
 Next stages are in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Layout
@@ -50,6 +54,8 @@ Next stages are in [docs/ROADMAP.md](docs/ROADMAP.md).
 | `crates/paging` | x86_64 4-level page-table builders (boot pool + dynamic) |
 | `crates/pmm` | Bitmap physical frame allocator |
 | `crates/heap` | Kernel heap allocator (free list + coalescing) |
+| `crates/acpi` | ACPI table parser (RSDP, XSDT/RSDT, MADT) |
+| `crates/apic` | Local APIC / IO-APIC register encodings, timer maths |
 | `crates/ps2` | PS/2 mouse packet decoder + pointer tracking |
 | `crates/x86` | Port I/O, serial (16550), MSRs, CPUID, GDT/TSS/IDT data, exception decoding |
 | `tools/` | Build, run and test scripts |

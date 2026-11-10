@@ -3,6 +3,14 @@
 version = 4
 
 [[package]]
+name = "nova-acpi"
+version = "0.1.0"
+
+[[package]]
+name = "nova-apic"
+version = "0.1.0"
+
+[[package]]
 name = "nova-boot"
 version = "0.1.0"
 dependencies = [
@@ -28,6 +36,8 @@ version = "0.1.0"
 name = "nova-kernel"
 version = "0.1.0"
 dependencies = [
+ "nova-acpi",
+ "nova-apic",
  "nova-bootinfo",
  "nova-heap",
  "nova-paging",
