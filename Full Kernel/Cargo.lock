@@ -25,12 +25,20 @@ name = "nova-kernel"
 version = "0.1.0"
 dependencies = [
  "nova-bootinfo",
+ "nova-pmm",
  "nova-x86",
 ]
 
 [[package]]
 name = "nova-paging"
 version = "0.1.0"
+
+[[package]]
+name = "nova-pmm"
+version = "0.1.0"
+dependencies = [
+ "nova-bootinfo",
+]
 
 [[package]]
 name = "nova-x86"

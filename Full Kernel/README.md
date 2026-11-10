@@ -27,6 +27,10 @@ IDT. A CPU fault now stops with a register dump on the serial log *and* a crash 
 instead of silently resetting the machine; double fault, NMI and machine check run on
 their own stacks. See the fault-test builds below.
 
+**Stage 3: physical memory manager — done.** A bitmap frame allocator hands out 4 KiB
+frames from the boot memory map (including the firmware's reclaimed scratch memory) and is
+checked at every boot by writing and verifying real memory.
+
 Next stages are in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Layout
@@ -38,6 +42,7 @@ Next stages are in [docs/ROADMAP.md](docs/ROADMAP.md).
 | `crates/bootinfo` | The boot protocol: `BootInfo`, memory map, framebuffer ([spec](docs/BOOT-PROTOCOL.md)) |
 | `crates/elf` | Bounds-checked ELF64 reader |
 | `crates/paging` | x86_64 4-level page-table builder |
+| `crates/pmm` | Bitmap physical frame allocator |
 | `crates/x86` | Port I/O, serial (16550), MSRs, CPUID, GDT/TSS/IDT data, exception decoding |
 | `tools/` | Build, run and test scripts |
 

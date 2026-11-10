@@ -15,6 +15,7 @@ mod exceptions;
 mod faults;
 mod font;
 mod log;
+mod pmm;
 mod screen;
 
 use nova_bootinfo::{BootInfo, MemoryKind, total_of};
@@ -69,6 +70,13 @@ pub unsafe extern "sysv64" fn _start(info: *const BootInfo) -> ! {
     kmain(info)
 }
 
+/// A cheap fingerprint of the memory map, to notice if it gets overwritten.
+fn checksum(map: &[nova_bootinfo::MemoryRegion]) -> u64 {
+    map.iter().fold(0xCBF2_9CE4_8422_2325u64, |h, r| {
+        (h ^ r.start ^ r.len.rotate_left(17) ^ ((r.kind() as u64) << 56)).wrapping_mul(0x100_0000_01B3)
+    })
+}
+
 fn mib(bytes: u64) -> u64 {
     bytes >> 20
 }
@@ -103,7 +111,37 @@ fn kmain(info: &'static BootInfo) -> ! {
     }
     let usable = total_of(map, MemoryKind::Usable);
     let reclaimable = total_of(map, MemoryKind::FirmwareReclaimable);
-    kprintln!("memory: {} MiB usable now, {} MiB more after the kernel owns the GDT/IDT", mib(usable), mib(reclaimable));
+    kprintln!("memory: {} MiB usable, {} MiB firmware scratch (reclaimable: the kernel now owns its GDT/IDT)", mib(usable), mib(reclaimable));
+
+    let map_sum = checksum(map);
+    // SAFETY: first and only call; `map` is the real memory map.
+    let free_mib = match unsafe { pmm::init(info, map) } {
+        Ok(p) => {
+            kprintln!(
+                "pmm: tracking {} frames; bitmap {} KiB at {:#x}; {} MiB free",
+                p.stats.tracked_frames,
+                p.bitmap_bytes.div_ceil(1024),
+                p.bitmap_phys,
+                mib(p.stats.free_bytes())
+            );
+            mib(p.stats.free_bytes())
+        }
+        Err(e) => panic!("pmm init failed: {e}"),
+    };
+    match pmm::self_test() {
+        Ok(t) => kprintln!(
+            "pmm: self-test passed ({} frames = {} MiB written, verified and freed{})",
+            t.frames_touched,
+            (t.frames_touched as u64 * 4096) >> 20,
+            if t.exhausted { "; ran until memory was exhausted" } else { "" }
+        ),
+        Err(e) => panic!("pmm self-test FAILED: {e}"),
+    }
+    // The test wrote over every frame it was given: if any of them was still
+    // in use (boot info, memory map, ...) it shows up here.
+    if !info.is_valid() || checksum(unsafe { info.memory_map() }) != map_sum {
+        panic!("pmm: boot info or memory map changed during the memory test");
+    }
 
     let fb = info.framebuffer;
     if fb.is_present() {
@@ -112,7 +150,7 @@ fn kmain(info: &'static BootInfo) -> ! {
         // SAFETY: the framebuffer is inside the direct map (NovaBoot maps
         // at least up to its end) and only the kernel draws to it.
         let mut s = unsafe { Screen::new(fb, info.phys_to_virt(fb.addr)) };
-        draw_boot_screen(&mut s, info, usable);
+        draw_boot_screen(&mut s, info, free_mib);
     } else {
         kprintln!("framebuffer: none");
     }
@@ -124,7 +162,7 @@ fn kmain(info: &'static BootInfo) -> ! {
     nova_x86::halt_forever()
 }
 
-fn draw_boot_screen(s: &mut Screen, info: &BootInfo, usable: u64) {
+fn draw_boot_screen(s: &mut Screen, info: &BootInfo, free_mib: u64) {
     let ink = Rgb(0xE8, 0xEC, 0xFF);
     let dim = Rgb(0x8C, 0x94, 0xC0);
     let accent = Rgb(0x6E, 0xE7, 0xD8);
@@ -140,13 +178,13 @@ fn draw_boot_screen(s: &mut Screen, info: &BootInfo, usable: u64) {
 
     s.text_centered(y, 6 * unit, ink, "NOVA OS");
     y += font::HEIGHT * 6 * unit + 6 * unit;
-    s.text_centered(y, 2 * unit, dim, "FULL KERNEL - STAGE 2: CPU TABLES + EXCEPTIONS");
+    s.text_centered(y, 2 * unit, dim, "FULL KERNEL - STAGE 3: PHYSICAL MEMORY");
     y += font::HEIGHT * 2 * unit + 14 * unit;
 
     let lines = [
         fmt_line!("BOOTED BY NOVABOOT (UEFI)  -  KERNEL {VERSION}"),
         fmt_line!("SCREEN {} X {}", info.framebuffer.width, info.framebuffer.height),
-        fmt_line!("MEMORY {} MIB USABLE", mib(usable)),
+        fmt_line!("MEMORY {} MIB FREE  -  FRAME ALLOCATOR TESTED", free_mib),
         fmt_line!("KERNEL AT {:#X}", info.kernel_virt),
         fmt_line!("OWN GDT + TSS + IDT  -  FAULTS ARE REPORTED"),
     ];

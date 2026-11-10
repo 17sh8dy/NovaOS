@@ -26,6 +26,8 @@ MUST_SEE = [
     "NovaBoot: firmware exited",      # ExitBootServices succeeded
     "Nova kernel",                    # kernel's first line
     "memory map:",                    # kernel read the BootInfo
+    "breakpoint self-test passed",    # stage 2: own IDT works
+    "pmm: self-test passed",          # stage 3: frame allocator works on real memory
     "NOVA KERNEL READY",              # kernel finished
 ]
 FAILURES = ["NOVA KERNEL PANIC", "NovaBoot panic", "cannot start Nova"]

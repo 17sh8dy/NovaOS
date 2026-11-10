@@ -14,3 +14,4 @@ bench = false
 [dependencies]
 nova-bootinfo = { path = "../crates/bootinfo" }
 nova-x86 = { path = "../crates/x86" }
+nova-pmm = { path = "../crates/pmm" }

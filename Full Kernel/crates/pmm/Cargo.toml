@@ -1,0 +1,9 @@
+[package]
+name = "nova-pmm"
+description = "physical frame allocator (bitmap) over the boot memory map."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+nova-bootinfo = { path = "../bootinfo" }
