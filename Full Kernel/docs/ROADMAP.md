@@ -7,7 +7,7 @@ Each stage ends with something that boots and is checked by `tools\test.ps1`.
 | 1 | **Bootloader + handoff** ✅ | NovaBoot loads the ELF kernel, page tables + NX, exits UEFI; the kernel logs the memory map and draws the boot screen |
 | 2 | CPU tables + exceptions ✅ | Own GDT + TSS (separate stacks for double fault / NMI), IDT with handlers that print a register dump; a deliberate fault in a test build is caught and reported, not a silent reset |
 | 3 | Physical memory manager ✅ | Frame allocator over `Usable` (then reclaimed) regions; unit-tested on the host like `crates/paging` |
-| 4 | Kernel virtual memory + heap | Kernel-owned page tables (drop the identity map), `alloc` support (Box, Vec) |
+| 4 | Kernel virtual memory + heap ✅ (+ PS/2 mouse, pulled forward) | Kernel-owned page tables (drop the identity map), `alloc` support (Box, Vec) |
 | 5 | Interrupts + time | ACPI (MADT) parsing, Local APIC + IOAPIC, timer tick, `hlt`-based idle |
 | 6 | Keyboard + console | PS/2 keyboard (USB later), a scrolling text console on the framebuffer |
 | 7 | Tasks | Kernel threads and a scheduler; then SMP (start the other cores) |
@@ -42,6 +42,31 @@ Later: USB (xHCI), networking, GPU, real-hardware testing on a USB stick.
 * Gaps: freeing a *reserved* frame is not detected (the bitmap can't tell reserved from
   allocated); no per-CPU caches / locking granularity yet; `Loader` memory is reclaimed in stage 4
   once the kernel has its own page tables; ACPI-reclaimable in stage 5.
+
+## Stage 4 notes
+
+* `kernel/src/vm.rs` builds the kernel's own page tables and switches CR3: direct map of all RAM
+  (2 MiB pages, 4 KiB at ragged edges, NX), the framebuffer **write-combining** (PAT entry 1),
+  the kernel image per section (text R-X, rodata R--, data RW-), the boot stack with its guard
+  page. The bootloader's identity map is gone: a null or low pointer is a #PF.
+* Before switching, vm.rs checks that the new tables map the running code, stack, boot data and
+  frame bitmap, and refuses to switch otherwise (a miss would be a triple fault).
+* `kernel/src/bootdata.rs` copies BootInfo + memory map into the kernel first, because they live in
+  `Loader` memory, which is then reclaimed (old page tables, boot data, loader image) and verified
+  by running the pmm self-test again afterwards.
+* `crates/paging/src/dynamic.rs`: page-table builder over any `TableMemory` (frame allocator +
+  direct map in the kernel, a Vec on the host); `crates/heap`: first-fit allocator with coalescing,
+  randomised host test; `kernel/src/heap.rs`: the `#[global_allocator]`, grows by mapping frames at
+  `0xFFFF_A000_0000_0000` (1 GiB window).
+* **PS/2 mouse** (polled): `crates/ps2` decodes packets (3- or 4-byte, wheel) and tracks the pointer;
+  `kernel/src/ps2.rs` talks to the i8042; `cursor.rs` draws an arrow with save-under. The keyboard
+  port is left disabled (stage 6). `tools/boot_test.py --mouse` drives it through QEMU and checks the
+  exact pointer position and button events.
+* More fault kinds: `null`, `lowmem` (identity map really gone), `ro` (kernel code is write-protected),
+  `nx` (heap is not executable).
+* Gaps: heap never shrinks; no unmap/free of table pages; ACPI memory still reserved (stage 5); heap
+  and IST stacks have no guard pages; the mouse is polled (busy loop) until interrupts exist; USB mice
+  and keyboards need xHCI (later); real PCs with USB-only input may have no i8042 at all.
 
 ## Known gaps in stage 1
 

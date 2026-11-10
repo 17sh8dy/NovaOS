@@ -21,11 +21,18 @@ name = "nova-elf"
 version = "0.1.0"
 
 [[package]]
+name = "nova-heap"
+version = "0.1.0"
+
+[[package]]
 name = "nova-kernel"
 version = "0.1.0"
 dependencies = [
  "nova-bootinfo",
+ "nova-heap",
+ "nova-paging",
  "nova-pmm",
+ "nova-ps2",
  "nova-x86",
 ]
 
@@ -39,6 +46,10 @@ version = "0.1.0"
 dependencies = [
  "nova-bootinfo",
 ]
+
+[[package]]
+name = "nova-ps2"
+version = "0.1.0"
 
 [[package]]
 name = "nova-x86"

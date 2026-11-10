@@ -37,7 +37,11 @@ try {
         @{ Kind = 'df';    Expect = @('NOVA KERNEL EXCEPTION', '#DF double fault', 'handler ran on IST 1') },
         @{ Kind = 'stack'; Expect = @('NOVA KERNEL EXCEPTION', '#DF double fault', 'handler ran on IST 1') },
         @{ Kind = 'nmi';   Expect = @('NOVA KERNEL EXCEPTION', 'NMI non-maskable interrupt', 'handler ran on IST 2') },
-        @{ Kind = 'panic'; Expect = @('NOVA KERNEL PANIC', 'deliberate panic') }
+        @{ Kind = 'panic'; Expect = @('NOVA KERNEL PANIC', 'deliberate panic') },
+        @{ Kind = 'null';  Expect = @('#PF page fault', '0x0000000000000000', 'page not present, read') },
+        @{ Kind = 'lowmem'; Expect = @('#PF page fault', '0x0000000000100000', 'page not present, read') },
+        @{ Kind = 'ro';    Expect = @('#PF page fault', 'protection violation, write') },
+        @{ Kind = 'nx';    Expect = @('#PF page fault', 'instruction fetch') }
     )
     try {
         foreach ($f in $faults) {
@@ -52,7 +56,7 @@ try {
     finally {
         & (Join-Path $PSScriptRoot 'build.ps1')   # back to the normal kernel
     }
-    Step 'normal boot still reaches READY' { python -I tools\boot_test.py --expect 'breakpoint self-test passed' --expect 'NOVA KERNEL READY' }
+    Step 'normal boot + mouse (move, left click, right click)' { python -I tools\boot_test.py --mouse }
 
     $kernel = 'build\esp\NOVA\KERNEL.ELF'
     Move-Item $kernel "$kernel.hold" -Force

@@ -19,6 +19,7 @@ SECTIONS
     . = 0xFFFFFFFF80000000;
     __kernel_start = .;
 
+    __text_start = .;
     .text : ALIGN(4K)
     {
         *(.text._start)
@@ -26,12 +27,16 @@ SECTIONS
     } :text
 
     . = ALIGN(4K);
+    __text_end = .;
+    __rodata_start = .;
     .rodata : ALIGN(4K)
     {
         *(.rodata .rodata.*)
     } :rodata
 
     . = ALIGN(4K);
+    __rodata_end = .;
+    __data_start = .;
     .data : ALIGN(4K)
     {
         *(.data .data.*)

@@ -7,6 +7,8 @@
 
 #![no_std]
 
+pub mod dynamic;
+
 #[cfg(test)]
 extern crate std;
 
@@ -48,6 +50,8 @@ pub enum MapError {
     HugePageInTheWay(u64),
     /// An entry points outside the pool (corrupt tables).
     Corrupt(u64),
+    /// Nothing is mapped at this address (unmapping).
+    NotMapped(u64),
 }
 
 impl fmt::Display for MapError {
@@ -59,6 +63,7 @@ impl fmt::Display for MapError {
             Self::AlreadyMapped(a) => write!(f, "address {a:#x} is already mapped"),
             Self::HugePageInTheWay(a) => write!(f, "address {a:#x} is inside a 2 MiB page"),
             Self::Corrupt(a) => write!(f, "table entry points outside the pool ({a:#x})"),
+            Self::NotMapped(a) => write!(f, "address {a:#x} is not mapped"),
         }
     }
 }

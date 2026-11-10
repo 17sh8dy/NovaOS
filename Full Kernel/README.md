@@ -31,6 +31,12 @@ their own stacks. See the fault-test builds below.
 frames from the boot memory map (including the firmware's reclaimed scratch memory) and is
 checked at every boot by writing and verifying real memory.
 
+**Stage 4: virtual memory + heap — done.** The kernel runs on its own page tables (code is
+write-protected, data and heap are no-execute, the bootloader's identity map is gone), has given
+back the bootloader's memory, and has a heap (`Box`, `Vec`, `String`). **PS/2 mouse** support came
+with it: boot in QEMU and move the mouse; a pointer follows it and a read-out shows its position.
+(Keyboard is next, with the console.)
+
 Next stages are in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Layout
@@ -41,8 +47,10 @@ Next stages are in [docs/ROADMAP.md](docs/ROADMAP.md).
 | `kernel/` | **The kernel** (`x86_64-unknown-none`), plus `linker.ld` |
 | `crates/bootinfo` | The boot protocol: `BootInfo`, memory map, framebuffer ([spec](docs/BOOT-PROTOCOL.md)) |
 | `crates/elf` | Bounds-checked ELF64 reader |
-| `crates/paging` | x86_64 4-level page-table builder |
+| `crates/paging` | x86_64 4-level page-table builders (boot pool + dynamic) |
 | `crates/pmm` | Bitmap physical frame allocator |
+| `crates/heap` | Kernel heap allocator (free list + coalescing) |
+| `crates/ps2` | PS/2 mouse packet decoder + pointer tracking |
 | `crates/x86` | Port I/O, serial (16550), MSRs, CPUID, GDT/TSS/IDT data, exception decoding |
 | `tools/` | Build, run and test scripts |
 

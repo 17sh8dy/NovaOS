@@ -86,6 +86,27 @@ pub fn read_tr() -> u16 {
     v
 }
 
+/// Loads a new top-level page table (flushes the non-global TLB entries).
+///
+/// # Safety
+/// `root` must be the physical address of a valid PML4 that maps the code,
+/// stack and data the CPU is using right now.
+#[inline]
+pub unsafe fn write_cr3(root: u64) {
+    unsafe { asm!("mov cr3, {}", in(reg) root, options(nostack, preserves_flags)) }
+}
+
+/// Invalidates the TLB entry for one page.
+#[inline]
+pub fn invlpg(addr: u64) {
+    // SAFETY: invlpg only drops a cached translation.
+    unsafe { asm!("invlpg [{}]", in(reg) addr, options(nostack, preserves_flags)) }
+}
+
+/// The page-attribute-table MSR (cache types selectable by PAT/PCD/PWT bits).
+pub const MSR_PAT: u32 = 0x277;
+pub const EFER_NXE_BIT: u64 = EFER_NXE;
+
 /// The faulting address of the last page fault.
 #[inline]
 pub fn read_cr2() -> u64 {

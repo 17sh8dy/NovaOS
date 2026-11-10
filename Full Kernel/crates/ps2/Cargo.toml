@@ -1,0 +1,6 @@
+[package]
+name = "nova-ps2"
+description = "PS/2 mouse packet decoding and pointer tracking (pure logic)."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true

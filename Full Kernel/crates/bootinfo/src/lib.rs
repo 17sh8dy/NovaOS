@@ -225,7 +225,7 @@ pub struct MemoryRegion {
 }
 
 impl MemoryRegion {
-    pub fn new(start: u64, len: u64, kind: MemoryKind) -> Self {
+    pub const fn new(start: u64, len: u64, kind: MemoryKind) -> Self {
         Self { start, len, kind: kind as u32, _pad: 0 }
     }
 

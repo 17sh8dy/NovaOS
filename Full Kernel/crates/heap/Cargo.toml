@@ -1,0 +1,6 @@
+[package]
+name = "nova-heap"
+description = "kernel heap allocator: address-ordered free list with coalescing."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true

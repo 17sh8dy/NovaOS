@@ -37,6 +37,28 @@ impl Screen {
         }
     }
 
+    /// The raw pixel at (x, y); 0 if outside the screen.
+    pub fn get_raw(&self, x: usize, y: usize) -> u32 {
+        if x < self.width() && y < self.height() {
+            // SAFETY: (x, y) is inside the framebuffer (checked above).
+            unsafe { self.base.add(y * self.fb.stride as usize + x).read_volatile() }
+        } else {
+            0
+        }
+    }
+
+    /// Writes a raw (already packed) pixel; ignored outside the screen.
+    pub fn put_raw(&mut self, x: usize, y: usize, px: u32) {
+        if x < self.width() && y < self.height() {
+            // SAFETY: (x, y) is inside the framebuffer (checked above).
+            unsafe { self.base.add(y * self.fb.stride as usize + x).write_volatile(px) };
+        }
+    }
+
+    pub fn pack(&self, c: Rgb) -> u32 {
+        self.fb.pack(c.0, c.1, c.2)
+    }
+
     pub fn fill_rect(&mut self, x: usize, y: usize, w: usize, h: usize, c: Rgb) {
         for yy in y..(y + h).min(self.height()) {
             for xx in x..(x + w).min(self.width()) {

@@ -13,10 +13,18 @@
 //!   stack  unbounded recursion into the stack guard page   -> #DF on IST 1
 //!   nmi    software `int 2`                                -> NMI on IST 2
 //!   panic  a Rust panic                                    -> panic screen
+//!   null   read of address 0                               -> #PF (the low half is unmapped)
+//!   lowmem read of 1 MiB, which the bootloader identity-mapped -> #PF (that map is gone)
+//!   ro     write to the kernel's own code                  -> #PF, protection violation (W^X)
+//!   nx     jump into the heap                              -> #PF, instruction fetch (NX)
 
 use core::arch::asm;
 
-pub const KINDS: [&str; 8] = ["div", "ud", "gp", "pf", "df", "stack", "nmi", "panic"];
+pub const KINDS: [&str; 12] = ["div", "ud", "gp", "pf", "df", "stack", "nmi", "panic", "null", "lowmem", "ro", "nx"];
+
+unsafe extern "C" {
+    static __text_start: u8;
+}
 
 pub fn run_if_requested() {
     let Some(kind) = option_env!("NOVA_FAULT") else { return };
@@ -47,6 +55,19 @@ pub fn run_if_requested() {
                 core::hint::black_box(recurse(0));
             }
             "nmi" => asm!("int 2"),
+            "null" => {
+                core::hint::black_box(core::ptr::null::<u8>().read_volatile());
+            }
+            "lowmem" => {
+                core::hint::black_box((0x10_0000usize as *const u8).read_volatile());
+            }
+            "ro" => (&raw const __text_start as *mut u8).write_volatile(0xCC),
+            "nx" => {
+                // A `ret` instruction in heap memory: the heap is mapped no-execute.
+                let code = alloc::boxed::Box::new([0xC3u8; 16]);
+                let f: extern "C" fn() = core::mem::transmute(code.as_ptr());
+                f();
+            }
             "panic" => panic!("deliberate panic from NOVA_FAULT=panic (value {})", 42),
             other => crate::kprintln!("fault-test: unknown kind '{other}' (known: {KINDS:?})"),
         }

@@ -12,6 +12,8 @@ use nova_pmm::{FRAME_SIZE, FrameAllocator, FreeError, Stats};
 static PMM: SpinLock<Option<FrameAllocator<'static>>> = SpinLock::new(None);
 /// Virtual address of physical address 0 (the direct map), for touching frames.
 static DIRECT_MAP: AtomicU64 = AtomicU64::new(0);
+/// Physical address of the allocator's own bitmap.
+static BITMAP_PHYS: AtomicU64 = AtomicU64::new(0);
 
 pub struct InitInfo {
     pub stats: Stats,
@@ -44,7 +46,12 @@ pub unsafe fn init(info: &BootInfo, map: &[MemoryRegion]) -> Result<InitInfo, &'
     alloc.reserve_range(home, home + bytes);
     let stats = alloc.stats();
     PMM.with(|p| *p = Some(alloc));
+    BITMAP_PHYS.store(home, Ordering::SeqCst);
     Ok(InitInfo { stats, bitmap_phys: home, bitmap_bytes: bytes })
+}
+
+pub fn bitmap_phys() -> u64 {
+    BITMAP_PHYS.load(Ordering::SeqCst)
 }
 
 pub fn stats() -> Option<Stats> {
@@ -61,6 +68,17 @@ pub fn alloc_contiguous(count: usize, align_frames: usize) -> Option<u64> {
     PMM.with(|p| p.as_mut()?.alloc_contiguous(count, align_frames))
 }
 
+/// Gives a physical range back to the allocator (only whole frames inside it).
+/// Returns how many frames became free.
+pub fn release_range(start: u64, end: u64) -> usize {
+    PMM.with(|p| p.as_mut().map_or(0, |a| a.release_range(start, end)))
+}
+
+/// Takes a physical range out of circulation (every frame touching it).
+pub fn reserve_range(start: u64, end: u64) -> usize {
+    PMM.with(|p| p.as_mut().map_or(0, |a| a.reserve_range(start, end)))
+}
+
 pub fn free_frame(addr: u64) -> Result<(), FreeError> {
     PMM.with(|p| p.as_mut().ok_or(FreeError::OutOfRange)?.free(addr))
 }
@@ -70,7 +88,7 @@ pub fn free_contiguous(addr: u64, count: usize) -> Result<(), FreeError> {
 }
 
 /// Direct-map pointer to the frame at physical address `phys`.
-fn frame_ptr(phys: u64) -> *mut u64 {
+pub fn frame_ptr(phys: u64) -> *mut u64 {
     (DIRECT_MAP.load(Ordering::SeqCst) + phys) as *mut u64
 }
 

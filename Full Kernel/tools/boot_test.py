@@ -110,6 +110,35 @@ def ppm_to_png(ppm: bytes) -> bytes:
             + chunk(b"IDAT", zlib.compress(rows, 6)) + chunk(b"IEND", b""))
 
 
+def mouse_test(qmp, serial, start=(640, 400), move=(100, 50)) -> str | None:
+    """Drives the guest's PS/2 mouse through QEMU's input layer and checks the
+    kernel saw it. Returns None on success or a description of what failed."""
+
+    def wait_for(text, seconds=10):
+        end = time.time() + seconds
+        while time.time() < end:
+            if text in read_log(serial):
+                return True
+            time.sleep(0.1)
+        return False
+
+    x, y = start[0] + move[0], start[1] + move[1]
+    qmp.cmd("input-send-event", events=[
+        {"type": "rel", "data": {"axis": "x", "value": move[0]}},
+        {"type": "rel", "data": {"axis": "y", "value": move[1]}},
+    ])
+    want = f"mouse: first movement, pointer at ({x}, {y})"
+    if not wait_for(want):
+        return f"expected {want!r} after moving the mouse"
+    for btn in ("left", "right"):
+        for down in (True, False):
+            qmp.cmd("input-send-event", events=[{"type": "btn", "data": {"down": down, "button": btn}}])
+            want = f"mouse: {btn} button {'down' if down else 'up'} at ({x}, {y})"
+            if not wait_for(want):
+                return f"expected {want!r}"
+    return None
+
+
 def main() -> int:
     import argparse
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -118,6 +147,8 @@ def main() -> int:
                     help="negative test: pass if ALL the given TEXTs appear in the log instead of a "
                          "full boot (repeatable)")
     ap.add_argument("--shot", default="boot_test", help="screenshot name (build/<name>.png)")
+    ap.add_argument("--mouse", action="store_true",
+                    help="after boot, move the mouse and click through QEMU and check the kernel saw it")
     opts = ap.parse_args()
     qemu = q.find_qemu()
     serial = q.BUILD / "serial.log"
@@ -154,6 +185,14 @@ def main() -> int:
                 break
             time.sleep(0.25)
         elapsed = time.time() - started
+
+        if ok and opts.mouse and not opts.expect:
+            problem = mouse_test(qmp, serial)
+            if problem:
+                ok = False
+                reason = "mouse test: " + problem
+            else:
+                print("Mouse: moved, left-clicked and right-clicked; the kernel saw all of it")
 
         if proc.poll() is None:
             time.sleep(0.5)  # let the last frame land
