@@ -112,8 +112,10 @@ def main() -> int:
     import argparse
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--memory", default="256M", help="guest RAM, e.g. 256M, 2G, 6G")
-    ap.add_argument("--expect", metavar="TEXT",
-                    help="negative test: pass if TEXT appears in the log instead of a full boot")
+    ap.add_argument("--expect", metavar="TEXT", action="append",
+                    help="negative test: pass if ALL the given TEXTs appear in the log instead of a "
+                         "full boot (repeatable)")
+    ap.add_argument("--shot", default="boot_test", help="screenshot name (build/<name>.png)")
     opts = ap.parse_args()
     qemu = q.find_qemu()
     serial = q.BUILD / "serial.log"
@@ -133,7 +135,7 @@ def main() -> int:
         qmp = Qmp(port, proc)
         while time.time() - started < TIMEOUT_S:
             log = read_log(serial)
-            if opts.expect and opts.expect in log:
+            if opts.expect and all(e in log for e in opts.expect):
                 time.sleep(1.0)
                 ok = True
                 break
@@ -153,13 +155,13 @@ def main() -> int:
 
         if proc.poll() is None:
             time.sleep(0.5)  # let the last frame land
-            ppm = q.BUILD / "boot_test.ppm"
+            ppm = q.BUILD / f"{opts.shot}.ppm"
             try:
                 qmp.cmd("screendump", filename=str(ppm))
                 time.sleep(0.3)
-                (q.BUILD / "boot_test.png").write_bytes(ppm_to_png(ppm.read_bytes()))
+                (q.BUILD / f"{opts.shot}.png").write_bytes(ppm_to_png(ppm.read_bytes()))
                 ppm.unlink()
-                print(f"Screenshot: {q.BUILD / 'boot_test.png'}")
+                print(f"Screenshot: {q.BUILD / (opts.shot + '.png')}")
             except Exception as e:  # screenshot is a bonus, not the verdict
                 print(f"(screenshot failed: {e})")
             try:

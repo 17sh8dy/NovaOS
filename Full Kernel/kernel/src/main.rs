@@ -1,13 +1,18 @@
 //! The Nova kernel.
 //!
 //! Stage 1: prove the NovaBoot handoff end to end. The kernel checks the
-//! BootInfo, reports the machine over serial, draws the boot screen and
-//! halts. Next stages (GDT/IDT, memory manager, interrupts, ...) are in
-//! docs/ROADMAP.md.
+//! BootInfo, reports the machine over serial and draws the boot screen.
+//! Stage 2: the kernel installs its own GDT, TSS and IDT, so a CPU fault is
+//! reported (serial + screen register dump) instead of silently resetting.
+//! Next stages (memory manager, heap, interrupts, ...) are in docs/ROADMAP.md.
 
 #![no_std]
 #![no_main]
 
+mod cpu;
+mod crash;
+mod exceptions;
+mod faults;
 mod font;
 mod log;
 mod screen;
@@ -31,6 +36,21 @@ pub unsafe extern "sysv64" fn _start(info: *const BootInfo) -> ! {
     log::init();
     kprintln!();
     kprintln!("Nova kernel {VERSION} (x86_64) - entered at {:#x}", _start as *const () as usize);
+
+    // Own the CPU tables before anything else can go wrong.
+    // SAFETY: first thing on the boot CPU, interrupts are off.
+    unsafe { cpu::init() };
+    kprintln!(
+        "cpu tables: GDT/TSS/IDT loaded (cs {:#x}, ss {:#x}, tr {:#x}); IST stacks for #DF, NMI, #MC",
+        nova_x86::read_cs(),
+        nova_x86::read_ss(),
+        nova_x86::read_tr()
+    );
+    if exceptions::self_test() {
+        kprintln!("exceptions: breakpoint self-test passed (handler ran, execution resumed)");
+    } else {
+        panic!("exceptions: breakpoint self-test FAILED");
+    }
 
     if info.is_null() {
         panic!("no boot info (rdi was null)");
@@ -88,6 +108,7 @@ fn kmain(info: &'static BootInfo) -> ! {
     let fb = info.framebuffer;
     if fb.is_present() {
         kprintln!("framebuffer: {}x{}, stride {}, at {:#x}", fb.width, fb.height, fb.stride, fb.addr);
+        crash::set_framebuffer(fb, info.phys_to_virt(fb.addr));
         // SAFETY: the framebuffer is inside the direct map (NovaBoot maps
         // at least up to its end) and only the kernel draws to it.
         let mut s = unsafe { Screen::new(fb, info.phys_to_virt(fb.addr)) };
@@ -95,6 +116,9 @@ fn kmain(info: &'static BootInfo) -> ! {
     } else {
         kprintln!("framebuffer: none");
     }
+
+    // Test builds (NOVA_FAULT=...) fault on purpose here; normal builds skip this.
+    faults::run_if_requested();
 
     kprintln!("{READY_MARKER}");
     nova_x86::halt_forever()
@@ -116,7 +140,7 @@ fn draw_boot_screen(s: &mut Screen, info: &BootInfo, usable: u64) {
 
     s.text_centered(y, 6 * unit, ink, "NOVA OS");
     y += font::HEIGHT * 6 * unit + 6 * unit;
-    s.text_centered(y, 2 * unit, dim, "FULL KERNEL - STAGE 1: BOOTLOADER");
+    s.text_centered(y, 2 * unit, dim, "FULL KERNEL - STAGE 2: CPU TABLES + EXCEPTIONS");
     y += font::HEIGHT * 2 * unit + 14 * unit;
 
     let lines = [
@@ -124,6 +148,7 @@ fn draw_boot_screen(s: &mut Screen, info: &BootInfo, usable: u64) {
         fmt_line!("SCREEN {} X {}", info.framebuffer.width, info.framebuffer.height),
         fmt_line!("MEMORY {} MIB USABLE", mib(usable)),
         fmt_line!("KERNEL AT {:#X}", info.kernel_virt),
+        fmt_line!("OWN GDT + TSS + IDT  -  FAULTS ARE REPORTED"),
     ];
     for l in &lines {
         s.text_centered(y, 2 * unit, ink, l.as_str());
@@ -133,10 +158,21 @@ fn draw_boot_screen(s: &mut Screen, info: &BootInfo, usable: u64) {
     s.text_centered(y, 2 * unit, accent, "KERNEL READY");
 }
 
+static PANICKING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 #[panic_handler]
 fn panic(p: &core::panic::PanicInfo) -> ! {
     // SAFETY: we never return, so stealing the log lock is fine.
     unsafe { log::force_unlock() };
-    kprintln!("\nNOVA KERNEL PANIC: {p}");
+    if PANICKING.swap(true, core::sync::atomic::Ordering::SeqCst) {
+        kprintln!("\nNOVA KERNEL PANIC while panicking: {p}");
+        nova_x86::halt_forever()
+    }
+    let mut r = crash::Report::new("NOVA KERNEL PANIC");
+    if let Some(l) = p.location() {
+        r.head(format_args!("at {}:{}", l.file(), l.line()));
+    }
+    r.wrapped(format_args!("{}", p.message()));
+    r.show();
     nova_x86::halt_forever()
 }

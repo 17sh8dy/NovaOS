@@ -27,6 +27,33 @@ try {
     Step 'boot 256M' { python -I tools\boot_test.py --memory 256M }
     Step 'boot 6G' { python -I tools\boot_test.py --memory 6G }
 
+    # Stage 2: for each deliberate fault, build a test kernel and check the
+    # crash report names the right exception (and the right stack, for #DF).
+    $faults = @(
+        @{ Kind = 'div';   Expect = @('NOVA KERNEL EXCEPTION', '#DE divide error') },
+        @{ Kind = 'ud';    Expect = @('NOVA KERNEL EXCEPTION', '#UD invalid opcode') },
+        @{ Kind = 'gp';    Expect = @('NOVA KERNEL EXCEPTION', '#GP general protection fault') },
+        @{ Kind = 'pf';    Expect = @('NOVA KERNEL EXCEPTION', '#PF page fault', '0xffffc00000000000', 'page not present, read') },
+        @{ Kind = 'df';    Expect = @('NOVA KERNEL EXCEPTION', '#DF double fault', 'handler ran on IST 1') },
+        @{ Kind = 'stack'; Expect = @('NOVA KERNEL EXCEPTION', '#DF double fault', 'handler ran on IST 1') },
+        @{ Kind = 'nmi';   Expect = @('NOVA KERNEL EXCEPTION', 'NMI non-maskable interrupt', 'handler ran on IST 2') },
+        @{ Kind = 'panic'; Expect = @('NOVA KERNEL PANIC', 'deliberate panic') }
+    )
+    try {
+        foreach ($f in $faults) {
+            Step "fault: $($f.Kind)" {
+                & (Join-Path $PSScriptRoot 'build.ps1') -Fault $f.Kind
+                [string[]]$a = @('-I', 'tools\boot_test.py', '--shot', "fault_$($f.Kind)")
+                foreach ($e in $f.Expect) { $a += @('--expect', $e) }
+                python @a
+            }
+        }
+    }
+    finally {
+        & (Join-Path $PSScriptRoot 'build.ps1')   # back to the normal kernel
+    }
+    Step 'normal boot still reaches READY' { python -I tools\boot_test.py --expect 'breakpoint self-test passed' --expect 'NOVA KERNEL READY' }
+
     $kernel = 'build\esp\NOVA\KERNEL.ELF'
     Move-Item $kernel "$kernel.hold" -Force
     try {

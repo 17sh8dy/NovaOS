@@ -22,6 +22,11 @@ UEFI firmware ──> NovaBoot (BOOTX64.EFI) ──> Nova kernel (KERNEL.ELF)
                    ExitBootServices, jump      halts (stage 2 picks up here)
 ```
 
+**Stage 2: CPU tables + exceptions — done.** The kernel loads its own GDT, TSS and
+IDT. A CPU fault now stops with a register dump on the serial log *and* a crash screen
+instead of silently resetting the machine; double fault, NMI and machine check run on
+their own stacks. See the fault-test builds below.
+
 Next stages are in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Layout
@@ -33,7 +38,7 @@ Next stages are in [docs/ROADMAP.md](docs/ROADMAP.md).
 | `crates/bootinfo` | The boot protocol: `BootInfo`, memory map, framebuffer ([spec](docs/BOOT-PROTOCOL.md)) |
 | `crates/elf` | Bounds-checked ELF64 reader |
 | `crates/paging` | x86_64 4-level page-table builder |
-| `crates/x86` | Port I/O, serial (16550), MSRs, CPUID |
+| `crates/x86` | Port I/O, serial (16550), MSRs, CPUID, GDT/TSS/IDT data, exception decoding |
 | `tools/` | Build, run and test scripts |
 
 ## Requirements
@@ -53,6 +58,14 @@ python tools\boot_test.py --memory 6G   # one headless boot; screenshot -> build
 ```
 
 `run.ps1 -Memory 2G` changes guest RAM; `-NoBuild` boots the existing build.
+
+### See a crash screen on purpose
+
+```powershell
+.	oolsuild.ps1 -Fault pf      # div | ud | gp | pf | df | stack | nmi | panic
+.	oolsun.ps1 -NoBuild         # boots, draws the boot screen, then faults
+.	oolsuild.ps1                # back to the normal kernel
+```
 
 ### Why WHPX and not plain QEMU emulation
 

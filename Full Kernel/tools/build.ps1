@@ -11,8 +11,13 @@
 
 .PARAMETER DebugBuild
   Build without optimisations.
+
+.PARAMETER Fault
+  Build a TEST kernel that triggers a deliberate fault after the boot screen:
+  div, ud, gp, pf, df, stack, nmi or panic (see kernel\src\faults.rs). Use it to
+  see the crash screen; run tools\build.ps1 again without it for a normal kernel.
 #>
-param([switch]$DebugBuild)
+param([switch]$DebugBuild, [string]$Fault = '')
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -23,6 +28,13 @@ Push-Location $root
 try {
     cargo build @cargoFlags -p nova-boot --target x86_64-unknown-uefi
     if ($LASTEXITCODE -ne 0) { throw 'NovaBoot (bootloader) build failed' }
+    if ($Fault) {
+        $env:NOVA_FAULT = $Fault
+        Write-Host "TEST KERNEL: it will fault on purpose ($Fault)" -ForegroundColor Yellow
+    }
+    else {
+        Remove-Item Env:NOVA_FAULT -ErrorAction SilentlyContinue
+    }
     cargo build @cargoFlags -p nova-kernel --target x86_64-unknown-none
     if ($LASTEXITCODE -ne 0) { throw 'Kernel build failed' }
 
@@ -34,5 +46,6 @@ try {
     Write-Host "Boot volume ready: $esp ($buildProfile)"
 }
 finally {
+    Remove-Item Env:NOVA_FAULT -ErrorAction SilentlyContinue
     Pop-Location
 }

@@ -2,9 +2,97 @@
 
 #![no_std]
 
+pub mod exception;
+pub mod gdt;
+pub mod idt;
 pub mod serial;
 
 use core::arch::asm;
+
+/// Loads the GDT register.
+///
+/// # Safety
+/// `ptr` must describe a valid GDT that stays in place (and mapped) for good.
+#[inline]
+pub unsafe fn lgdt(ptr: &gdt::TablePointer) {
+    unsafe { asm!("lgdt [{}]", in(reg) ptr, options(readonly, nostack, preserves_flags)) }
+}
+
+/// Loads the IDT register.
+///
+/// # Safety
+/// `ptr` must describe a valid IDT that stays in place (and mapped) for good.
+#[inline]
+pub unsafe fn lidt(ptr: &gdt::TablePointer) {
+    unsafe { asm!("lidt [{}]", in(reg) ptr, options(readonly, nostack, preserves_flags)) }
+}
+
+/// Loads the task register with a TSS selector.
+///
+/// # Safety
+/// `selector` must name an available TSS descriptor in the loaded GDT.
+#[inline]
+pub unsafe fn ltr(selector: u16) {
+    unsafe { asm!("ltr {0:x}", in(reg) selector, options(nostack, preserves_flags)) }
+}
+
+/// Reloads `cs` (via a far return) and the data segment registers from the
+/// freshly loaded GDT. `fs` and `gs` are set to the null selector.
+///
+/// # Safety
+/// The loaded GDT must hold a 64-bit code segment at `cs` and a data segment
+/// at `ds`.
+pub unsafe fn reload_segments(cs: u16, ds: u16) {
+    unsafe {
+        asm!(
+            "push {cs}",
+            "lea {tmp}, [2f + rip]",
+            "push {tmp}",
+            "retfq",
+            "2:",
+            "mov ds, {ds:x}",
+            "mov es, {ds:x}",
+            "mov ss, {ds:x}",
+            "xor {ds:e}, {ds:e}",
+            "mov fs, {ds:x}",
+            "mov gs, {ds:x}",
+            cs = in(reg) cs as u64,
+            tmp = out(reg) _,
+            ds = inout(reg) ds as u32 => _,
+            options(preserves_flags),
+        )
+    }
+}
+
+#[inline]
+pub fn read_cs() -> u16 {
+    let v: u16;
+    unsafe { asm!("mov {0:x}, cs", out(reg) v, options(nomem, nostack, preserves_flags)) }
+    v
+}
+
+#[inline]
+pub fn read_ss() -> u16 {
+    let v: u16;
+    unsafe { asm!("mov {0:x}, ss", out(reg) v, options(nomem, nostack, preserves_flags)) }
+    v
+}
+
+/// The task register (the selector of the loaded TSS).
+#[inline]
+pub fn read_tr() -> u16 {
+    let v: u16;
+    unsafe { asm!("str {0:x}", out(reg) v, options(nomem, nostack, preserves_flags)) }
+    v
+}
+
+/// The faulting address of the last page fault.
+#[inline]
+pub fn read_cr2() -> u64 {
+    let v: u64;
+    unsafe { asm!("mov {}, cr2", out(reg) v, options(nomem, nostack, preserves_flags)) }
+    v
+}
 
 /// Writes a byte to an I/O port.
 ///

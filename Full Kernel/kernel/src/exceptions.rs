@@ -1,0 +1,261 @@
+//! CPU exception handling.
+//!
+//! Each of the 32 exception vectors has a tiny assembly stub that normalises
+//! the stack (a dummy error code where the CPU pushes none), pushes the
+//! vector number and all general registers, and calls [`nova_exception_handler`]
+//! with a pointer to the saved state.
+//!
+//! Breakpoints (#BP) are handled and execution resumes; they exist to prove
+//! the machinery works. Everything else is a kernel bug: the handler writes a
+//! register dump to the serial log and the screen and halts the machine, so a
+//! fault is *reported* instead of silently resetting the PC.
+//!
+//! Interrupts are still disabled everywhere (stage 5 adds the APIC), so these
+//! handlers never nest with device interrupts; the only way in is a CPU fault.
+
+use crate::cpu;
+use crate::crash::Report;
+use crate::log;
+use core::arch::{asm, global_asm};
+use core::sync::atomic::{AtomicU32, Ordering};
+use nova_x86::exception::{self as exc, BREAKPOINT, PAGE_FAULT};
+
+/// The register state saved by the stubs, lowest address first.
+/// Matches the push order in `nova_isr_common` plus what the CPU pushes.
+#[repr(C)]
+pub struct ExceptionFrame {
+    pub r15: u64,
+    pub r14: u64,
+    pub r13: u64,
+    pub r12: u64,
+    pub r11: u64,
+    pub r10: u64,
+    pub r9: u64,
+    pub r8: u64,
+    pub rbp: u64,
+    pub rdi: u64,
+    pub rsi: u64,
+    pub rdx: u64,
+    pub rcx: u64,
+    pub rbx: u64,
+    pub rax: u64,
+    pub vector: u64,
+    pub error: u64,
+    // Pushed by the CPU:
+    pub rip: u64,
+    pub cs: u64,
+    pub rflags: u64,
+    pub rsp: u64,
+    pub ss: u64,
+}
+
+const _: () = assert!(size_of::<ExceptionFrame>() == 22 * 8);
+
+macro_rules! isr_stubs {
+    () => {
+        r#"
+        .macro ISR_NOERR v
+        nova_isr_\v:
+            push 0
+            push \v
+            jmp nova_isr_common
+        .endm
+        .macro ISR_ERR v
+        nova_isr_\v:
+            push \v
+            jmp nova_isr_common
+        .endm
+
+        .section .text.nova_isr,"ax"
+        ISR_NOERR 0
+        ISR_NOERR 1
+        ISR_NOERR 2
+        ISR_NOERR 3
+        ISR_NOERR 4
+        ISR_NOERR 5
+        ISR_NOERR 6
+        ISR_NOERR 7
+        ISR_ERR   8
+        ISR_NOERR 9
+        ISR_ERR   10
+        ISR_ERR   11
+        ISR_ERR   12
+        ISR_ERR   13
+        ISR_ERR   14
+        ISR_NOERR 15
+        ISR_NOERR 16
+        ISR_ERR   17
+        ISR_NOERR 18
+        ISR_NOERR 19
+        ISR_NOERR 20
+        ISR_ERR   21
+        ISR_NOERR 22
+        ISR_NOERR 23
+        ISR_NOERR 24
+        ISR_NOERR 25
+        ISR_NOERR 26
+        ISR_NOERR 27
+        ISR_NOERR 28
+        ISR_ERR   29
+        ISR_ERR   30
+        ISR_NOERR 31
+
+        nova_isr_common:
+            push rax
+            push rbx
+            push rcx
+            push rdx
+            push rsi
+            push rdi
+            push rbp
+            push r8
+            push r9
+            push r10
+            push r11
+            push r12
+            push r13
+            push r14
+            push r15
+            mov rdi, rsp
+            cld
+            call {handler}
+            pop r15
+            pop r14
+            pop r13
+            pop r12
+            pop r11
+            pop r10
+            pop r9
+            pop r8
+            pop rbp
+            pop rdi
+            pop rsi
+            pop rdx
+            pop rcx
+            pop rbx
+            pop rax
+            add rsp, 16
+            iretq
+
+        .section .rodata.nova_isr_table,"a"
+        .balign 8
+        .global nova_isr_table
+        nova_isr_table:
+            .quad nova_isr_0,  nova_isr_1,  nova_isr_2,  nova_isr_3
+            .quad nova_isr_4,  nova_isr_5,  nova_isr_6,  nova_isr_7
+            .quad nova_isr_8,  nova_isr_9,  nova_isr_10, nova_isr_11
+            .quad nova_isr_12, nova_isr_13, nova_isr_14, nova_isr_15
+            .quad nova_isr_16, nova_isr_17, nova_isr_18, nova_isr_19
+            .quad nova_isr_20, nova_isr_21, nova_isr_22, nova_isr_23
+            .quad nova_isr_24, nova_isr_25, nova_isr_26, nova_isr_27
+            .quad nova_isr_28, nova_isr_29, nova_isr_30, nova_isr_31
+        "#
+    };
+}
+
+global_asm!(isr_stubs!(), handler = sym nova_exception_handler);
+
+unsafe extern "C" {
+    static nova_isr_table: [u64; 32];
+    static __kernel_start: u8;
+    static __kernel_end: u8;
+}
+
+/// Addresses of the 32 exception stubs, indexed by vector.
+pub fn stub_table() -> &'static [u64; 32] {
+    // SAFETY: defined by the global_asm! above; read-only.
+    unsafe { &*core::ptr::addr_of!(nova_isr_table) }
+}
+
+/// Breakpoints handled so far (the boot self-test checks this).
+static BREAKPOINTS: AtomicU32 = AtomicU32::new(0);
+/// How many exceptions have entered the fatal path (to catch faults inside it).
+static FATAL_DEPTH: AtomicU32 = AtomicU32::new(0);
+
+/// Raises a breakpoint and checks that the handler ran and execution resumed.
+pub fn self_test() -> bool {
+    let before = BREAKPOINTS.load(Ordering::SeqCst);
+    // SAFETY: int3 is handled by our #BP handler, which returns.
+    unsafe { asm!("int3") };
+    BREAKPOINTS.load(Ordering::SeqCst) == before + 1
+}
+
+/// Called from the assembly stub with interrupts disabled.
+#[unsafe(no_mangle)]
+extern "sysv64" fn nova_exception_handler(f: &mut ExceptionFrame) {
+    if f.vector == BREAKPOINT as u64 {
+        BREAKPOINTS.fetch_add(1, Ordering::SeqCst);
+        crate::kprintln!("#BP breakpoint at {:#x}: handled, continuing", f.rip);
+        return;
+    }
+    fatal(f)
+}
+
+fn fatal(f: &ExceptionFrame) -> ! {
+    // SAFETY: we never return; if the fault hit mid-log, the lock is stale.
+    unsafe { log::force_unlock() };
+    if FATAL_DEPTH.fetch_add(1, Ordering::SeqCst) > 0 {
+        // A fault while reporting a fault. Say so with the least possible machinery.
+        crate::kprintln!(
+            "\nNOVA KERNEL EXCEPTION while reporting an exception: vector {} at rip {:#x}",
+            f.vector,
+            f.rip
+        );
+        nova_x86::halt_forever()
+    }
+
+    let vector = f.vector as u8;
+    let (mnemonic, description) = exc::name(vector);
+    let mut r = Report::new("NOVA KERNEL EXCEPTION");
+    r.head(format_args!("{mnemonic} {description} (vector {vector})"));
+
+    if exc::has_error_code(vector) {
+        let mut why = crate::crash::TextBuf::<160>::new();
+        let _ = if vector == PAGE_FAULT {
+            exc::write_page_fault_error(&mut why, f.error)
+        } else {
+            exc::write_selector_error(&mut why, f.error)
+        };
+        r.head(format_args!("error code {:#x}: {}", f.error, why.as_str()));
+    }
+    if vector == PAGE_FAULT {
+        r.head(format_args!("fault address (CR2) {:#018x}", nova_x86::read_cr2()));
+    }
+
+    let (k_start, k_end) = (core::ptr::addr_of!(__kernel_start) as u64, core::ptr::addr_of!(__kernel_end) as u64);
+    if (k_start..k_end).contains(&f.rip) {
+        r.head(format_args!("at RIP {:#018x}  (kernel + {:#x})", f.rip, f.rip - k_start));
+    } else {
+        r.head(format_args!("at RIP {:#018x}  (outside the kernel image)", f.rip));
+    }
+    r.blank();
+
+    let mut flags = crate::crash::TextBuf::<64>::new();
+    let _ = exc::write_rflags(&mut flags, f.rflags);
+    r.line(format_args!("CS {:#06x}   SS {:#06x}   RFLAGS {:#x} [{}]", f.cs, f.ss, f.rflags, flags.as_str()));
+    r.line(format_args!("RSP {:#018x}   RBP {:#018x}", f.rsp, f.rbp));
+    r.line(format_args!("RAX {:#018x}   RBX {:#018x}", f.rax, f.rbx));
+    r.line(format_args!("RCX {:#018x}   RDX {:#018x}", f.rcx, f.rdx));
+    r.line(format_args!("RSI {:#018x}   RDI {:#018x}", f.rsi, f.rdi));
+    r.line(format_args!("R8  {:#018x}   R9  {:#018x}", f.r8, f.r9));
+    r.line(format_args!("R10 {:#018x}   R11 {:#018x}", f.r10, f.r11));
+    r.line(format_args!("R12 {:#018x}   R13 {:#018x}", f.r12, f.r13));
+    r.line(format_args!("R14 {:#018x}   R15 {:#018x}", f.r14, f.r15));
+    r.line(format_args!("CR0 {:#018x}   CR2 {:#018x}", nova_x86::read_cr0(), nova_x86::read_cr2()));
+    r.line(format_args!("CR3 {:#018x}   CR4 {:#018x}", nova_x86::read_cr3(), nova_x86::read_cr4()));
+
+    // Which stack was this handler running on? An IST stack means the CPU
+    // switched away from the kernel stack on purpose (or because it broke).
+    let handler_stack = f as *const ExceptionFrame as u64;
+    match cpu::ist_stack_containing(handler_stack) {
+        Some(1) => r.line(format_args!("handler ran on IST 1, the double-fault stack")),
+        Some(2) => r.line(format_args!("handler ran on IST 2, the NMI stack")),
+        Some(n) => r.line(format_args!("handler ran on IST {n}, the machine-check stack")),
+        None => r.line(format_args!("handler ran on the kernel stack")),
+    }
+    if let Some(n) = cpu::ist_stack_containing(f.rsp) {
+        r.line(format_args!("(the faulting RSP is itself inside IST stack {n})"));
+    }
+    r.show();
+    nova_x86::halt_forever()
+}
