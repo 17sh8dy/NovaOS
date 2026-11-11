@@ -48,6 +48,11 @@ guard-paged stacks, a preemptive scheduler, and all CPUs started (4 in the defau
 **Stage 6: keyboard + console — done.** Boot in QEMU and type: a shell (`help`) runs in a kernel
 thread on a scrolling text console, with line editing and history.
 
+**Stage 8: user space — done.** Programs run in ring 3 in their own address spaces, talk to the kernel
+through system calls, and are killed (not the kernel) when they misbehave. In the shell: `progs`,
+`run hello`, `run greet`, `spawn counter counter`, `run crash`, `run evil`. User programs are built by
+`tools\build_user.ps1` (called by `build.ps1`) into `kernel\user_bin`, which is git-ignored.
+
 Next stages are in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Layout
@@ -91,9 +96,9 @@ python tools\boot_test.py --memory 6G   # one headless boot; screenshot -> build
 ### See a crash screen on purpose
 
 ```powershell
-.	oolsuild.ps1 -Fault pf      # div | ud | gp | pf | df | stack | nmi | panic
-.	oolsun.ps1 -NoBuild         # boots, draws the boot screen, then faults
-.	oolsuild.ps1                # back to the normal kernel
+.\tools\build.ps1 -Fault pf      # div | ud | gp | pf | df | stack | nmi | panic
+.\tools\run.ps1 -NoBuild         # boots, draws the boot screen, then faults
+.\tools\build.ps1                # back to the normal kernel
 ```
 
 ### Why WHPX and not plain QEMU emulation

@@ -11,11 +11,40 @@ Each stage ends with something that boots and is checked by `tools\test.ps1`.
 | 5 | Interrupts + time ✅ | ACPI (MADT) parsing, Local APIC + IOAPIC, timer tick, `hlt`-based idle |
 | 6 | Keyboard + console ✅ | PS/2 keyboard (USB later), a scrolling text console on the framebuffer |
 | 7 | Tasks ✅ | Kernel threads and a scheduler; then SMP (start the other cores) |
-| 8 | User space | Ring 3, system calls, ELF programs loaded from disk |
+| 8 | User space ✅ | Ring 3, system calls, ELF programs (built into the kernel until stage 9 gives us a disk) |
 | 9 | Storage + files | AHCI/NVMe driver, a filesystem, a VFS |
 | 10 | Nova shell | First real Nova user interface running on Nova itself |
 
 Later: USB (xHCI), networking, GPU, real-hardware testing on a USB stick.
+
+## Stage 8 notes
+
+* **Ring 3:** the GDT has user code/data segments (ring 3) and the SYSRET-compatible layout; the TSS's
+  ring-0 stack and `PerCpu::kernel_rsp` are switched to each thread's kernel stack on every context
+  switch. `SYSCALL` (`kernel/src/syscall.rs`) and interrupts/exceptions from user mode `swapgs` so the
+  kernel's per-CPU `gs` is in place; the user's `gs` is restored on the way out. Returns use `iretq`
+  (no SYSRET canonical-address pitfalls).
+* **Processes** (`kernel/src/process.rs`): own page tables (kernel upper half shared, supervisor-only),
+  ELF loader built on `crates/elf` (per-page permissions from the program headers, W^X enforced,
+  addresses limited to 0x1000..0x1000_0000), 64 KiB stack with an unmapped guard page, `sbrk` heap.
+  The scheduler switches CR3 per thread. On exit or kill, every frame and page table is returned
+  (checked: free-frame count identical before and after ten more processes).
+* **System calls:** exit, write, read (a keyboard line, via the shell's editor), getpid, yield,
+  sleep_ms, uptime_ms, sbrk. Every user pointer is checked by walking the process's page tables
+  (`copy_from_user` / `copy_to_user`): kernel addresses, unmapped pages and wrapping ranges give
+  -EFAULT, never a kernel fault.
+* **User faults** (#PF, #GP, #UD...) kill only the process and print why; the kernel carries on.
+* **Programs** are `user/src/bin/*.rs` (no_std, tiny runtime in `user/src/lib.rs`), linked at 0x400000
+  by `user/linker.ld`, built by `tools\build_user.ps1` (own RUSTFLAGS: the kernel's code model would
+  break them) into `kernel/user_bin` (git-ignored) and embedded in the kernel (no file system yet).
+  Shell: `progs`, `run NAME`, `spawn NAME...`, `ps`. Programs: hello, greet (reads the keyboard),
+  counter, memtest (private memory), crash (killed), evil (bad syscalls, then `cli`: killed).
+* `boot_test.py --user` runs all of that through the emulated keyboard, including two processes
+  interleaving and the no-leak check.
+* Gaps: no fork/exec/wait/pipes/signals, no file system (programs are built in), one thread per
+  process, user stack does not grow, no ASLR, no resource limits besides the 64 MiB heap cap, new
+  kernel PML4 slots created after a process exists are not seen by it, and an NMI landing between
+  `swapgs` and `iretq` could run with the wrong `gs` (needs a safer NMI path).
 
 ## Stage 2 notes
 
@@ -23,8 +52,8 @@ Later: USB (xHCI), networking, GPU, real-hardware testing on a USB stick.
   the register dump; `crash.rs` draws it (serial + screen); pure logic (descriptor
   encoding, error-code decoding) is unit-tested in `crates/x86`.
 * IST stacks: #DF, NMI, #MC each get 16 KiB. A kernel stack overflow hits the guard
-  page and is reported as #DF on IST 1 (`toolsuild.ps1 -Fault stack` shows it).
-* Test kernels: `toolsuild.ps1 -Fault div|ud|gp|pf|df|stack|nmi|panic`, then `run.ps1 -NoBuild`.
+  page and is reported as #DF on IST 1 (`tools\build.ps1 -Fault stack` shows it).
+* Test kernels: `tools\build.ps1 -Fault div|ud|gp|pf|df|stack|nmi|panic`, then `run.ps1 -NoBuild`.
   `test.ps1` builds and boots all of them.
 * Gaps: no backtrace in the dump (needs frame pointers); IST stacks have no guard pages
   until stage 4; vectors 32-255 are not-present gates (a stray interrupt shows up as #NP/#GP);
