@@ -32,11 +32,14 @@ mod heap;
 mod interrupts;
 mod log;
 mod pmm;
+mod process;
+mod programs;
 mod ps2;
 mod screen;
 mod sched;
 mod shell;
 mod smp;
+mod syscall;
 mod vm;
 
 use nova_bootinfo::{BootInfo, MemoryKind, total_of};
@@ -61,7 +64,10 @@ pub unsafe extern "sysv64" fn _start(info: *const BootInfo) -> ! {
 
     // Own the CPU tables before anything else can go wrong.
     // SAFETY: first thing on the boot CPU, interrupts are off.
-    unsafe { cpu::init() };
+    unsafe {
+        cpu::init();
+        cpu::enable_syscall(syscall::entry_address());
+    }
     kprintln!(
         "cpu tables: GDT/TSS/IDT loaded (cs {:#x}, ss {:#x}, tr {:#x}); IST stacks for #DF, NMI, #MC",
         nova_x86::read_cs(),

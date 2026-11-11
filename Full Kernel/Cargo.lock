@@ -48,6 +48,7 @@ dependencies = [
  "nova-apic",
  "nova-bootinfo",
  "nova-console",
+ "nova-elf",
  "nova-heap",
  "nova-kbd",
  "nova-paging",
@@ -69,6 +70,10 @@ dependencies = [
 
 [[package]]
 name = "nova-ps2"
+version = "0.1.0"
+
+[[package]]
+name = "nova-user"
 version = "0.1.0"
 
 [[package]]

@@ -19,7 +19,7 @@
 use crate::exceptions;
 use alloc::boxed::Box;
 use core::ptr::{addr_of, addr_of_mut};
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use nova_x86::exception::{DOUBLE_FAULT, MACHINE_CHECK, NMI};
 use nova_x86::gdt::{Gdt, KERNEL_CS, KERNEL_DS, TSS_SELECTOR, TablePointer, Tss};
 use nova_x86::idt::{Idt, IdtEntry};
@@ -55,11 +55,18 @@ impl CpuTables {
     }
 }
 
-/// Per-CPU state, reached with [`this_cpu`]. `self_ptr` must stay first: `gs:0`
-/// holds the address of the record itself.
+/// Per-CPU state, reached with [`this_cpu`]. `self_ptr`, `user_rsp` and
+/// `kernel_rsp` must stay first and in this order: the SYSCALL entry stub
+/// addresses them as `gs:[0]`, `gs:[8]` and `gs:[16]`.
 #[repr(C)]
 pub struct PerCpu {
     self_ptr: AtomicPtr<PerCpu>,
+    /// Scratch for the SYSCALL stub: the user stack pointer.
+    pub user_rsp: AtomicU64,
+    /// Top of the kernel stack of the thread running here (for entries from user mode).
+    pub kernel_rsp: AtomicU64,
+    /// The page-table root loaded on this CPU.
+    pub cr3: AtomicU64,
     /// Dense index: 0 = boot CPU.
     pub id: usize,
     pub apic_id: AtomicU32,
@@ -78,6 +85,9 @@ impl PerCpu {
     const fn new(id: usize, apic_id: u32) -> Self {
         Self {
             self_ptr: AtomicPtr::new(core::ptr::null_mut()),
+            user_rsp: AtomicU64::new(0),
+            kernel_rsp: AtomicU64::new(0),
+            cr3: AtomicU64::new(0),
             id,
             apic_id: AtomicU32::new(apic_id),
             tables: AtomicPtr::new(core::ptr::null_mut()),
@@ -218,6 +228,38 @@ pub unsafe fn init_ap(id: usize, apic_id: u32) -> &'static PerCpu {
         install_percpu(percpu, tables);
     }
     percpu
+}
+
+/// Tells the CPU where to switch to when user mode traps into the kernel:
+/// the TSS's ring-0 stack (interrupts and exceptions) and the per-CPU slot
+/// the SYSCALL stub reads. Call whenever a different thread starts running.
+pub fn set_kernel_stack(top: u64) {
+    let cpu = this_cpu();
+    cpu.kernel_rsp.store(top, Ordering::SeqCst);
+    // SAFETY: the tables of a started CPU are never freed; only this CPU writes its own TSS.
+    unsafe {
+        if let Some(t) = cpu.tables.load(Ordering::SeqCst).as_mut() {
+            core::ptr::write_volatile(addr_of_mut!(t.tss.rsp[0]), top);
+        }
+    }
+}
+
+/// Turns on SYSCALL/SYSRET on this CPU, entering the kernel at `entry`.
+///
+/// # Safety
+/// `entry` must be the SYSCALL entry stub; call once per CPU after `init`/`init_ap`.
+pub unsafe fn enable_syscall(entry: u64) {
+    use nova_x86::gdt::{KERNEL_CS, SYSRET_BASE};
+    // Entering via SYSCALL clears these RFLAGS bits: IF (the stub decides when to
+    // re-enable interrupts), DF, TF, NT and AC.
+    const SFMASK: u64 = 0x200 | 0x400 | 0x100 | 0x4000 | 0x4_0000;
+    unsafe {
+        let efer = nova_x86::rdmsr(nova_x86::MSR_EFER);
+        nova_x86::wrmsr(nova_x86::MSR_EFER, efer | nova_x86::EFER_SCE);
+        nova_x86::wrmsr(nova_x86::MSR_STAR, (SYSRET_BASE as u64) << 48 | (KERNEL_CS as u64) << 32);
+        nova_x86::wrmsr(nova_x86::MSR_LSTAR, entry);
+        nova_x86::wrmsr(nova_x86::MSR_SFMASK, SFMASK);
+    }
 }
 
 /// Records the boot CPU's APIC id (known once the APIC is up).

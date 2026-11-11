@@ -233,6 +233,110 @@ def shell_test(qmp, serial, cpus) -> str | None:
     return None
 
 
+def user_test(qmp, serial) -> str | None:
+    """Runs user-space programs from the shell: ring 3, system calls, the
+    keyboard from user space, isolation, killing misbehaving processes, and a
+    check that finished processes give all their memory back."""
+
+    def wait_for(pattern, seconds=15):
+        end = time.time() + seconds
+        while time.time() < end:
+            m = re.search(pattern, read_log(serial))
+            if m:
+                return m
+            time.sleep(0.1)
+        return None
+
+    def run(command, expect, seconds=15):
+        type_text(qmp, command + "\n")
+        if not wait_for(expect, seconds):
+            return f"after {command!r} expected {expect!r}"
+        return None
+
+    def free_frames():
+        type_text(qmp, "mem\n")
+        end = time.time() + 10
+        while time.time() < end:
+            ms = re.findall(r"\((\d+) frames free\)", read_log(serial))
+            if ms and wait_for(r"con: heap:", 1):
+                return int(ms[-1])
+            time.sleep(0.1)
+        return None
+
+    if not wait_for(r"shell: ready"):
+        return "the shell never started"
+    before = free_frames()
+
+    for command, expect in [
+        ("progs", r"con:   hello +\d+ bytes"),
+        ("run hello", r"con: Hello from user space! I am process \d+\."),
+    ]:
+        if (err := run(command, expect)):
+            return err
+    if not wait_for(r"\[process \d+ \(hello\) exited with code 0\]"):
+        return "hello did not report a clean exit"
+
+    # The keyboard, from user space.
+    type_text(qmp, "run greet\n")
+    if not wait_for(r"con: What is your name\?"):
+        return "greet never asked for a name"
+    type_text(qmp, "Nova\n")
+    if not wait_for(r"con: Hello, Nova!"):
+        return "greet did not read the typed name (read system call)"
+    if not wait_for(r"\[process \d+ \(greet\) exited with code 0\]"):
+        return "greet did not exit cleanly"
+
+    # A crashing program is killed; the kernel and shell carry on.
+    if (err := run("run crash", r"killed: #PF page fault at 0x[0-9a-f]+, address 0x0\]")):
+        return err
+    if (err := run("echo still alive", r"con: still alive")):
+        return err
+
+    # Hostile system calls are refused; a privileged instruction kills it.
+    type_text(qmp, "run evil\n")
+    for expect in [r"write from a kernel address returned -14", r"wrapping range returned -14",
+                   r"unmapped address returned -14", r"unknown system call returned -38",
+                   r"\(evil\) killed: #GP"]:
+        if not wait_for(expect):
+            return f"evil: expected {expect!r}"
+
+    # Isolation + preemption: several memtests and counters at once.
+    type_text(qmp, "spawn memtest memtest memtest counter counter\n")
+    end = time.time() + 30
+    while time.time() < end and len(re.findall(r"memtest ok", read_log(serial))) < 3:
+        time.sleep(0.2)
+    if len(re.findall(r"memtest ok", read_log(serial))) < 3:
+        return "the three memtests did not all pass (private memory broken?)"
+    if "overwritten by someone else" in read_log(serial):
+        return "a process saw another process's memory"
+    if not wait_for(r"counter 10[\s\S]*counter 10"):
+        return "the two counters did not both finish"
+    pids = re.findall(r"con: \[(\d+)\] counter (\d+)", read_log(serial))
+    first_done = next((i for i, (p, n) in enumerate(pids) if n == "10"), None)
+    if first_done is None or len({p for p, _ in pids[:first_done]}) < 2:
+        return "the two counters did not interleave (no multitasking between processes)"
+    if not wait_for(r"con: no user processes running", 1):
+        # give them time to be reaped, then ask
+        time.sleep(1.0)
+    type_text(qmp, "ps\n")
+    if not wait_for(r"con: no user processes running"):
+        return "processes are still listed after they all finished"
+
+    # Memory: ten more processes must not leak frames.
+    mid = free_frames()
+    for _ in range(10):
+        type_text(qmp, "run hello\n")
+        time.sleep(0.25)
+    time.sleep(1.0)
+    after = free_frames()
+    if before is None or mid is None or after is None:
+        return "could not read the free frame count"
+    if mid - after > 40:
+        return f"free frames went from {mid} to {after} over ten processes: a leak of ~{(mid - after) // 10} frames per process"
+    print(f"Memory: {mid} frames free before ten more processes, {after} after (no leak)")
+    return None
+
+
 def main() -> int:
     import argparse
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -242,6 +346,7 @@ def main() -> int:
                          "full boot (repeatable)")
     ap.add_argument("--cpus", type=int, default=None, help="virtual CPUs (default 4, or NOVA_CPUS)")
     ap.add_argument("--shot", default="boot_test", help="screenshot name (build/<name>.png)")
+    ap.add_argument("--user", action="store_true", help="after boot, run user-space programs from the shell")
     ap.add_argument("--shell", action="store_true", help="after boot, type commands into the shell through QEMU's keyboard")
     ap.add_argument("--mouse", action="store_true",
                     help="after boot, move the mouse and click through QEMU and check the kernel saw it")
@@ -297,6 +402,14 @@ def main() -> int:
                 reason = "shell test: " + problem
             else:
                 print("Shell: typed commands, edited with backspace, used history and Ctrl+C; every reply was correct")
+
+        if ok and opts.user and not opts.expect:
+            problem = user_test(qmp, serial)
+            if problem:
+                ok = False
+                reason = "user-space test: " + problem
+            else:
+                print("User space: programs ran in ring 3, read the keyboard, were isolated, and bad ones were killed")
 
         if proc.poll() is None:
             time.sleep(0.5)  # let the last frame land

@@ -6,7 +6,7 @@
 //! as `con: ...`, which is how the automated tests see what the screen shows.
 
 use crate::gui::{self, COLOR_ACCENT, COLOR_DIM, COLOR_ERROR, COLOR_TEXT};
-use crate::{cpu, heap, interrupts, pmm, ps2, sched};
+use crate::{cpu, heap, interrupts, pmm, process, programs, ps2, sched};
 use alloc::string::String;
 use nova_console::{Edit, EditKey, LineEditor};
 use nova_kbd::{Action, Input, Key};
@@ -14,11 +14,17 @@ use nova_kbd::{Action, Input, Key};
 const PROMPT: &str = "nova> ";
 
 /// Prints text on the console and mirrors it to the serial log.
-fn out(text: &str, color: u8) {
+pub fn out(text: &str, color: u8) {
     gui::console_write(text, color);
     for line in text.lines() {
         crate::kprintln!("con: {line}");
     }
+}
+
+/// A status line from the kernel (a process starting, ending, or being killed).
+pub fn announce(text: &str, error: bool) {
+    out(text, if error { COLOR_ERROR } else { COLOR_DIM });
+    gui::console_write("\n", COLOR_TEXT);
 }
 
 fn outln(text: &str) {
@@ -67,9 +73,22 @@ fn redraw_line(start: (usize, usize), text: &str, cursor: usize, max: usize) {
     });
 }
 
+/// Reads one line for a user program (the `read` system call): the same
+/// line editor, no prompt (the program prints its own). The calling thread
+/// becomes the one the keyboard wakes.
+pub fn read_line_for_user() -> String {
+    let mut editor = LineEditor::new();
+    let line = read_line(&mut editor, None).unwrap_or_default();
+    crate::kprintln!("con: (input) {line}");
+    line
+}
+
 /// Reads one line, editing in place. Returns None on Ctrl+C.
-fn read_line(editor: &mut LineEditor) -> Option<String> {
-    gui::console_write(PROMPT, COLOR_ACCENT);
+fn read_line(editor: &mut LineEditor, prompt: Option<&str>) -> Option<String> {
+    ps2::set_key_waiter(sched::current_id());
+    if let Some(p) = prompt {
+        gui::console_write(p, COLOR_ACCENT);
+    }
     let mut start = gui::with_console(|g| g.cursor()).unwrap_or((0, 0));
     let cols = gui::console_size().map_or(80, |s| s.0);
     let max = cols.saturating_sub(start.0 + 1);
@@ -78,7 +97,9 @@ fn read_line(editor: &mut LineEditor) -> Option<String> {
             let Some(key) = edit_key(input) else {
                 if input.ctrl && matches!(input.action, Action::Char('l')) {
                     gui::with_console(|g| g.clear());
-                    gui::console_write(PROMPT, COLOR_ACCENT);
+                    if let Some(p) = prompt {
+                        gui::console_write(p, COLOR_ACCENT);
+                    }
                     start = gui::with_console(|g| g.cursor()).unwrap_or((0, 0));
                     redraw_line(start, &editor.text(), editor.cursor(), max);
                 }
@@ -94,7 +115,9 @@ fn read_line(editor: &mut LineEditor) -> Option<String> {
                     // Leave the finished line on screen (the editor is already empty again).
                     redraw_line(start, &line, line.chars().count(), max);
                     gui::console_write("\n", COLOR_TEXT);
-                    crate::kprintln!("con: {PROMPT}{line}");
+                    if let Some(p) = prompt {
+                        crate::kprintln!("con: {p}{line}");
+                    }
                     return Some(line);
                 }
                 Edit::Cancelled => {
@@ -121,6 +144,10 @@ mem             memory: physical frames and the kernel heap
 cpus            the CPUs
 threads         scheduler statistics
 sleep MS        sleep (tests blocking and the scheduler)
+progs           list the built-in user programs
+run NAME        run a user program and wait for it
+spawn NAME...   start user programs in the background
+ps              list running user processes
 version         kernel version
 panic           deliberately crash the kernel (shows the panic screen)
 reboot          restart the machine
@@ -183,6 +210,33 @@ fn execute(line: &str) {
             }
             _ => errln("usage: sleep MILLISECONDS (at most 60000)"),
         },
+        "progs" => {
+            for (name, size) in programs::list() {
+                outln(&alloc::format!("  {name:<10} {size} bytes"));
+            }
+        }
+        "run" => match process::spawn(rest) {
+            Ok((_, handle)) => handle.join_sleeping(),
+            Err(e) => errln(&e),
+        },
+        // `spawn a b c` starts several programs at once, in the background.
+        "spawn" => {
+            for name in rest.split_whitespace() {
+                match process::spawn(name) {
+                    Ok((pid, _)) => outln(&alloc::format!("[process {pid} ({name}) started in the background]")),
+                    Err(e) => errln(&e),
+                }
+            }
+        }
+        "ps" => {
+            let list = process::list();
+            if list.is_empty() {
+                outln("no user processes running");
+            }
+            for (pid, name) in list {
+                outln(&alloc::format!("  pid {pid:<4} {name}"));
+            }
+        }
         "version" => outln(&alloc::format!("Nova kernel {} (x86_64, {} CPUs)", env!("CARGO_PKG_VERSION"), cpu::online_count())),
         "panic" => panic!("the 'panic' shell command was run"),
         "reboot" => {
@@ -207,7 +261,7 @@ pub fn run() {
     crate::kprintln!("shell: ready");
     let mut editor = LineEditor::new();
     loop {
-        if let Some(line) = read_line(&mut editor) {
+        if let Some(line) = read_line(&mut editor, Some(PROMPT)) {
             execute(&line);
         }
     }

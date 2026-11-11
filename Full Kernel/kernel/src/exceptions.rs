@@ -60,6 +60,13 @@ global_asm!(
     r#"
     .section .text.nova_isr,"ax"
     nova_isr_common:
+        // Entered from user mode (the saved CS has RPL 3)? Then `gs` still holds the
+        // user's value: swap in the kernel's (the per-CPU record). The frame so far:
+        // [rsp] vector, [rsp+8] error code, [rsp+16] rip, [rsp+24] cs.
+        test byte ptr [rsp + 24], 3
+        jz 2f
+        swapgs
+    2:
         push rax
         push rbx
         push rcx
@@ -94,6 +101,11 @@ global_asm!(
         pop rbx
         pop rax
         add rsp, 16
+        // Returning to user mode? Swap the user's gs back in ([rsp] rip, [rsp+8] cs).
+        test byte ptr [rsp + 8], 3
+        jz 3f
+        swapgs
+    3:
         iretq
     "#,
     handler = sym nova_exception_handler
@@ -135,6 +147,11 @@ extern "sysv64" fn nova_exception_handler(f: &mut ExceptionFrame) {
     // Another CPU is dying and has told us to stop (see smp::halt_other_cpus).
     if f.vector == nova_x86::exception::NMI as u64 && crate::smp::panicking() {
         nova_x86::halt_forever();
+    }
+    // A fault in user mode kills that process, not the kernel (NMI, double fault
+    // and machine check are always fatal).
+    if f.cs & 3 == 3 && f.vector < 32 && !matches!(f.vector as u8, nova_x86::exception::NMI | nova_x86::exception::DOUBLE_FAULT | nova_x86::exception::MACHINE_CHECK) {
+        crate::process::user_fault(f);
     }
     if f.vector == BREAKPOINT as u64 {
         BREAKPOINTS.fetch_add(1, Ordering::SeqCst);

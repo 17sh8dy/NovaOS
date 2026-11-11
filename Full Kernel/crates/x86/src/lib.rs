@@ -157,6 +157,14 @@ pub unsafe fn wrmsr(msr: u32, value: u64) {
 }
 
 pub const MSR_EFER: u32 = 0xC000_0080;
+/// EFER.SCE: enables the SYSCALL / SYSRET instructions.
+pub const EFER_SCE: u64 = 1;
+/// SYSCALL segment bases (bits 47:32 kernel, 63:48 SYSRET), entry point, and RFLAGS mask.
+pub const MSR_STAR: u32 = 0xC000_0081;
+pub const MSR_LSTAR: u32 = 0xC000_0082;
+pub const MSR_SFMASK: u32 = 0xC000_0084;
+/// The `gs` base that `swapgs` exchanges with the active one.
+pub const MSR_KERNEL_GS_BASE: u32 = 0xC000_0102;
 pub const EFER_NXE: u64 = 1 << 11;
 
 /// CPUID. Returns (eax, ebx, ecx, edx).

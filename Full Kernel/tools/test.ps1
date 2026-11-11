@@ -19,6 +19,7 @@ function Step($name, [scriptblock]$body) {
     if ($LASTEXITCODE -ne 0) { $script:failed += $name; Write-Host "FAILED: $name" -ForegroundColor Red }
 }
 try {
+    Step 'user programs' { & (Join-Path $PSScriptRoot 'build_user.ps1'); $global:LASTEXITCODE = 0 }
     Step 'unit tests' { cargo test }
     Step 'clippy (libraries)' { cargo clippy --all-targets -- -D warnings }
     Step 'clippy (bootloader)' { cargo clippy --release -p nova-boot --target x86_64-unknown-uefi -- -D warnings }
@@ -59,7 +60,7 @@ try {
     finally {
         & (Join-Path $PSScriptRoot 'build.ps1')   # back to the normal kernel
     }
-    Step 'normal boot + mouse + keyboard/shell' { python -I tools\boot_test.py --mouse --shell }
+    Step 'normal boot + mouse + keyboard/shell' { python -I tools\boot_test.py --mouse --shell --user }
 
     $kernel = 'build\esp\NOVA\KERNEL.ELF'
     Move-Item $kernel "$kernel.hold" -Force

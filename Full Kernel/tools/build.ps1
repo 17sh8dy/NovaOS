@@ -26,6 +26,7 @@ $buildProfile = if ($DebugBuild) { 'debug' } else { 'release' }
 
 Push-Location $root
 try {
+    & (Join-Path $PSScriptRoot 'build_user.ps1')   # the kernel embeds the user programs
     cargo build @cargoFlags -p nova-boot --target x86_64-unknown-uefi
     if ($LASTEXITCODE -ne 0) { throw 'NovaBoot (bootloader) build failed' }
     if ($Fault) {

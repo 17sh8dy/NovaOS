@@ -7,7 +7,7 @@
 //! direct map and host tests plug in a `Vec`.
 
 use crate::{
-    ADDR_MASK, HUGE, LARGE_PAGE_SIZE, MapError, NO_EXECUTE, PAGE_SIZE, PRESENT, WRITABLE, index, is_canonical,
+    ADDR_MASK, HUGE, LARGE_PAGE_SIZE, MapError, NO_EXECUTE, PAGE_SIZE, PRESENT, USER, WRITABLE, index, is_canonical,
 };
 
 /// Where page tables come from and how to read and write them.
@@ -42,16 +42,20 @@ impl<M: TableMemory> AddressSpace<M> {
     }
 
     /// Returns the next-level table behind `table[idx]`, creating it if absent.
-    fn child(&mut self, table: u64, idx: usize, virt: u64) -> Result<u64, MapError> {
+    /// `user` marks the path as reachable from ring 3 (every level of a user
+    /// mapping needs the USER bit, or the CPU refuses the access).
+    fn child(&mut self, table: u64, idx: usize, virt: u64, user: bool) -> Result<u64, MapError> {
         let entry = self.mem.table(table)[idx];
+        let user_bit = if user { USER } else { 0 };
         if entry & PRESENT != 0 {
             if entry & HUGE != 0 {
                 return Err(MapError::HugePageInTheWay(virt));
             }
+            self.mem.table(table)[idx] = entry | user_bit;
             return Ok(entry & ADDR_MASK);
         }
         let new = self.mem.alloc_table().ok_or(MapError::OutOfTables)?;
-        self.mem.table(table)[idx] = new | TABLE_FLAGS;
+        self.mem.table(table)[idx] = new | TABLE_FLAGS | user_bit;
         Ok(new)
     }
 
@@ -71,9 +75,10 @@ impl<M: TableMemory> AddressSpace<M> {
     /// Maps one 4 KiB page. `flags` are leaf bits (WRITABLE, NO_EXECUTE, cache bits...).
     pub fn map_4k(&mut self, virt: u64, phys: u64, flags: u64) -> Result<(), MapError> {
         Self::check(virt, phys, PAGE_SIZE)?;
-        let pdpt = self.child(self.root, index(virt, 4), virt)?;
-        let pd = self.child(pdpt, index(virt, 3), virt)?;
-        let pt = self.child(pd, index(virt, 2), virt)?;
+        let user = flags & USER != 0;
+        let pdpt = self.child(self.root, index(virt, 4), virt, user)?;
+        let pd = self.child(pdpt, index(virt, 3), virt, user)?;
+        let pt = self.child(pd, index(virt, 2), virt, user)?;
         let e = &mut self.mem.table(pt)[index(virt, 1)];
         if *e & PRESENT != 0 {
             return Err(MapError::AlreadyMapped(virt));
@@ -85,8 +90,9 @@ impl<M: TableMemory> AddressSpace<M> {
     /// Maps one 2 MiB page.
     pub fn map_2m(&mut self, virt: u64, phys: u64, flags: u64) -> Result<(), MapError> {
         Self::check(virt, phys, LARGE_PAGE_SIZE)?;
-        let pdpt = self.child(self.root, index(virt, 4), virt)?;
-        let pd = self.child(pdpt, index(virt, 3), virt)?;
+        let user = flags & USER != 0;
+        let pdpt = self.child(self.root, index(virt, 4), virt, user)?;
+        let pd = self.child(pdpt, index(virt, 3), virt, user)?;
         let e = &mut self.mem.table(pd)[index(virt, 2)];
         if *e & PRESENT != 0 {
             return Err(MapError::AlreadyMapped(virt));
@@ -285,6 +291,29 @@ mod tests {
         assert_eq!(a.unmap_4k(0x1234_5000), Err(MapError::NotMapped(0x1234_5000)));
         a.map_4k(0xFFFF_A000_0000_0000, 0x8000, WRITABLE).unwrap();
         assert_eq!(a.translate(0xFFFF_A000_0000_0000).map(|t| t.0), Some(0x8000), "can be mapped again");
+    }
+
+    #[test]
+    fn user_mappings_mark_every_level_user_accessible() {
+        let mut a = space(16);
+        a.map_4k(0x40_0000, 0x7000, WRITABLE | USER).unwrap();
+        // Walk by hand: all of PML4/PDPT/PD/PT entries on the path carry USER.
+        let mut table = a.root();
+        for level in (1..=4).rev() {
+            let e = a.memory().table(table)[index(0x40_0000, level)];
+            assert_ne!(e & USER, 0, "level {level} must allow user access");
+            table = e & ADDR_MASK;
+        }
+        // A later kernel-only mapping in a *different* subtree stays supervisor-only.
+        a.map_4k(0xFFFF_8000_0000_0000, 0x8000, WRITABLE).unwrap();
+        let root = a.root();
+        let e = a.memory().table(root)[index(0xFFFF_8000_0000_0000, 4)];
+        assert_eq!(e & USER, 0);
+        // Mapping a user page next to a kernel page in the same table upgrades the path
+        // but not the kernel leaf.
+        a.map_4k(0x40_1000, 0x9000, WRITABLE).unwrap();
+        assert_eq!(a.translate(0x40_1000).unwrap().1 & USER, 0);
+        assert_ne!(a.translate(0x40_0000).unwrap().1 & USER, 0);
     }
 
     #[test]

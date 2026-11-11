@@ -1,0 +1,12 @@
+[package]
+name = "nova-user"
+description = "Nova user-space programs and their tiny runtime (no_std, syscalls only)."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# One library (the runtime) and one binary per program in src/bin.
+# Built for x86_64-unknown-none by tools/build_user.ps1 and embedded in the kernel.
+[lib]
+test = false
+bench = false

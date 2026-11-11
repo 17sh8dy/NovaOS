@@ -24,6 +24,7 @@
 use crate::cpu::{self, PerCpu};
 use crate::interrupts::{self, TICK_HZ};
 use crate::log::SpinLock;
+use crate::process::Process;
 use crate::{pmm, vm};
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
@@ -81,6 +82,10 @@ struct Thread {
     wake_pending: bool,
     /// A Blocked thread that has been switched away from completely (safe to wake).
     parked: bool,
+    /// Page-table root to run this thread on (0 = the kernel's own).
+    cr3: u64,
+    /// The process this thread belongs to, if it runs user code.
+    process: Option<Arc<Process>>,
 }
 
 struct Sched {
@@ -273,11 +278,24 @@ fn schedule() {
         cpu.current.store(next, Ordering::SeqCst);
         cpu.slice.store(0, Ordering::SeqCst);
         let old = &mut s.thread(cur).saved_rsp as *mut u64;
-        let new = s.thread(next).saved_rsp;
-        Some((old, new))
+        let nt = s.thread(next);
+        let new = nt.saved_rsp;
+        let cr3 = if nt.cr3 == 0 { vm::root() } else { nt.cr3 };
+        let kstack = nt.stack.as_ref().map(|st| st.top());
+        Some((old, new, cr3, kstack))
     });
-    if let Some((old, new)) = target {
+    if let Some((old, new, cr3, kstack)) = target {
         SWITCHES.fetch_add(1, Ordering::Relaxed);
+        // The next thread's address space and trap stack. Every address space maps the
+        // kernel's upper half identically, so it is safe to switch before the stacks.
+        if cpu.cr3.load(Ordering::SeqCst) != cr3 {
+            cpu.cr3.store(cr3, Ordering::SeqCst);
+            // SAFETY: `cr3` is a kernel root or a process root that shares the kernel's mappings.
+            unsafe { nova_x86::write_cr3(cr3) };
+        }
+        if let Some(top) = kstack {
+            cpu::set_kernel_stack(top);
+        }
         // SAFETY: `old` points into a live Thread; `new` is a stack prepared by
         // prepare_stack or saved by a previous switch_context.
         unsafe { switch_context(old, new) };
@@ -302,11 +320,14 @@ pub fn init() {
             done: Arc::new(AtomicBool::new(false)),
             wake_pending: false,
             parked: false,
+            cr3: 0,
+            process: None,
         });
-        create(s, "idle/0", true, Box::new(idle_loop)).expect("no memory for the boot CPU's idle thread").0
+        create(s, "idle/0", true, 0, None, Box::new(idle_loop)).expect("no memory for the boot CPU's idle thread").0
     });
     cpu.current.store(0, Ordering::SeqCst);
     cpu.idle.store(idle_id, Ordering::SeqCst);
+    cpu.cr3.store(vm::root(), Ordering::SeqCst);
     READY.store(true, Ordering::SeqCst);
 }
 
@@ -325,13 +346,16 @@ pub fn init_ap() {
             done: Arc::new(AtomicBool::new(false)),
             wake_pending: false,
             parked: false,
+            cr3: 0,
+            process: None,
         })
     });
     cpu.current.store(id, Ordering::SeqCst);
     cpu.idle.store(id, Ordering::SeqCst);
+    cpu.cr3.store(vm::root(), Ordering::SeqCst);
 }
 
-fn create(s: &mut Sched, name: &str, idle: bool, f: Box<dyn FnOnce() + Send>) -> Option<(usize, Arc<AtomicBool>)> {
+fn create(s: &mut Sched, name: &str, idle: bool, cr3: u64, process: Option<Arc<Process>>, f: Box<dyn FnOnce() + Send>) -> Option<(usize, Arc<AtomicBool>)> {
     let stack = s.alloc_stack()?;
     let arg = Box::into_raw(Box::new(f)) as u64;
     let done = Arc::new(AtomicBool::new(false));
@@ -345,6 +369,8 @@ fn create(s: &mut Sched, name: &str, idle: bool, f: Box<dyn FnOnce() + Send>) ->
         done: done.clone(),
         wake_pending: false,
         parked: false,
+        cr3,
+        process,
     });
     if !idle {
         s.ready.push_back(id);
@@ -368,13 +394,36 @@ impl JoinHandle {
             core::hint::spin_loop();
         }
     }
+
+    /// Like `join` but sleeps between checks instead of spinning (for waiting on
+    /// long-running threads, e.g. a foreground user program).
+    pub fn join_sleeping(self) {
+        while !self.is_finished() {
+            sleep_ms(5);
+        }
+    }
 }
 
 /// Starts a new kernel thread running `f`. It becomes ready immediately and
 /// may run on any CPU.
 pub fn spawn(name: &str, f: impl FnOnce() + Send + 'static) -> Option<JoinHandle> {
-    let r = SCHED.with(|s| create(s, name, false, Box::new(f)));
+    let r = SCHED.with(|s| create(s, name, false, 0, None, Box::new(f)));
     r.map(|(_, done)| JoinHandle { done })
+}
+
+/// Starts a thread that runs on `process`'s page tables (its closure is
+/// expected to enter user mode). It gets a kernel stack like any thread; that
+/// stack is where the CPU lands when user mode traps into the kernel.
+pub fn spawn_user(name: &str, process: Arc<Process>, f: impl FnOnce() + Send + 'static) -> Option<JoinHandle> {
+    let cr3 = process.root();
+    let r = SCHED.with(|s| create(s, name, false, cr3, Some(process), Box::new(f)));
+    r.map(|(_, done)| JoinHandle { done })
+}
+
+/// The process the calling thread belongs to (None for kernel threads).
+pub fn current_process() -> Option<Arc<Process>> {
+    let cpu = cpu::this_cpu();
+    SCHED.with(|s| s.thread(cpu.current.load(Ordering::SeqCst)).process.clone())
 }
 
 /// Gives the CPU to another ready thread, if there is one.

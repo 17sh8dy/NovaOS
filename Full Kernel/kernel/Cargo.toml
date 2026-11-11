@@ -22,3 +22,4 @@ nova-acpi = { path = "../crates/acpi" }
 nova-apic = { path = "../crates/apic" }
 nova-kbd = { path = "../crates/kbd" }
 nova-console = { path = "../crates/console" }
+nova-elf = { path = "../crates/elf" }

@@ -63,6 +63,7 @@ Next stages are in [docs/ROADMAP.md](docs/ROADMAP.md).
 | `crates/heap` | Kernel heap allocator (free list + coalescing) |
 | `crates/acpi` | ACPI table parser (RSDP, XSDT/RSDT, MADT) |
 | `crates/apic` | Local APIC / IO-APIC register encodings, timer maths |
+| `user/` | The user-space runtime and programs (`user/src/bin`) |
 | `crates/kbd` | Keyboard scancode decoding, US layout, modifiers |
 | `crates/console` | Text grid (scrolling, dirty rows) + line editor |
 | `crates/ps2` | PS/2 mouse packet decoder + pointer tracking |

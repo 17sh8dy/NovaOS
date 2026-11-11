@@ -13,6 +13,7 @@ members = [
     "crates/console",
     "crates/x86",
     "boot",
+    "user",
     "kernel",
 ]
 # `cargo test` from the root runs the host-testable libraries only.

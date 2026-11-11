@@ -251,6 +251,8 @@ extern "sysv64" fn ap_main(index: u64) -> ! {
     let apic_id = apic::this_apic_id();
     // SAFETY: first code on this CPU, interrupts are off, the heap works.
     let me = unsafe { cpu::init_ap(index as usize, apic_id) };
+    // SAFETY: this CPU's tables are loaded; the stub is the kernel's SYSCALL entry.
+    unsafe { cpu::enable_syscall(crate::syscall::entry_address()) };
     apic::init_ap();
     sched::init_ap();
     apic::start_timer_ap();
