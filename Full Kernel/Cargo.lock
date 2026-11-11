@@ -33,6 +33,10 @@ name = "nova-elf"
 version = "0.1.0"
 
 [[package]]
+name = "nova-fs"
+version = "0.1.0"
+
+[[package]]
 name = "nova-heap"
 version = "0.1.0"
 
@@ -49,6 +53,7 @@ dependencies = [
  "nova-bootinfo",
  "nova-console",
  "nova-elf",
+ "nova-fs",
  "nova-heap",
  "nova-kbd",
  "nova-paging",

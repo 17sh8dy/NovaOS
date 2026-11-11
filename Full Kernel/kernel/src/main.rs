@@ -19,6 +19,7 @@
 extern crate alloc;
 
 mod acpi;
+mod ahci;
 mod apic;
 mod bootdata;
 mod cpu;
@@ -26,11 +27,14 @@ mod crash;
 mod cursor;
 mod exceptions;
 mod faults;
+mod files;
 mod font;
 mod gui;
 mod heap;
 mod interrupts;
+mod kmutex;
 mod log;
+mod pci;
 mod pmm;
 mod process;
 mod programs;
@@ -277,6 +281,10 @@ fn kmain(boot_copy: &'static BootInfo) -> ! {
         start_other_cpus();
         run_scheduler_tests();
         faults::run_late_if_requested();
+
+        // ---- Stage 9: storage and files ------------------------------------
+        files::init();
+
         if have_gui {
             gui::set_cpus(cpu::online_count());
             if keyboard {

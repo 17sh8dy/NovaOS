@@ -1,0 +1,6 @@
+[package]
+name = "nova-fs"
+description = "NovaFS (an on-disk file system), a RAM file system and a VFS with mount points (pure logic over a block-device trait)."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true

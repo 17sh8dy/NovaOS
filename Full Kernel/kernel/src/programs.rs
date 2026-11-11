@@ -15,6 +15,10 @@ static PROGRAMS: &[(&str, &[u8])] = &[
     program!("memtest"),
     program!("crash"),
     program!("evil"),
+    program!("cat"),
+    program!("ls"),
+    program!("fsdemo"),
+    program!("fsbig"),
 ];
 
 /// The ELF image of the program called `name`.

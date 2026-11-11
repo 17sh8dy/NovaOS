@@ -6,12 +6,34 @@
 //! as `con: ...`, which is how the automated tests see what the screen shows.
 
 use crate::gui::{self, COLOR_ACCENT, COLOR_DIM, COLOR_ERROR, COLOR_TEXT};
+use crate::files::{self, VFS};
+use crate::log::SpinLock;
 use crate::{cpu, heap, interrupts, pmm, process, programs, ps2, sched};
 use alloc::string::String;
 use nova_console::{Edit, EditKey, LineEditor};
+use nova_fs::NodeKind;
 use nova_kbd::{Action, Input, Key};
 
 const PROMPT: &str = "nova> ";
+
+/// The working directory relative paths are resolved against.
+static CWD: SpinLock<String> = SpinLock::new(String::new());
+
+/// The shell's current directory (what a new process inherits).
+pub fn cwd() -> String {
+    let c = CWD.with(|c| c.clone());
+    if c.is_empty() { String::from("/") } else { c }
+}
+
+fn abs(arg: &str) -> String {
+    files::absolute(&cwd(), arg)
+}
+
+fn fs_err(what: &str, e: nova_fs::FsError) {
+    errln(&alloc::format!("{what}: {e}"));
+}
+
+const MAX_CAT: usize = 64 * 1024;
 
 /// Prints text on the console and mirrors it to the serial log.
 pub fn out(text: &str, color: u8) {
@@ -145,9 +167,16 @@ cpus            the CPUs
 threads         scheduler statistics
 sleep MS        sleep (tests blocking and the scheduler)
 progs           list the built-in user programs
-run NAME        run a user program and wait for it
+run NAME [ARGS] run a program (built-in, /bin/NAME, or a path) and wait
 spawn NAME...   start user programs in the background
 ps              list running user processes
+Files:
+pwd, cd [DIR], ls [DIR], cat FILE, write FILE TEXT, mkdir DIR, rm PATH,
+stat PATH, cp SRC DST    work on the file system (paths may be relative)
+disks           the disks found; mounts / df: mounted file systems
+format DISK erase   create a NovaFS on a disk (DESTROYS the disk)
+install         copy the built-in programs to /bin on the disk
+fscheck         check the disk's file system; sync: write everything out
 version         kernel version
 panic           deliberately crash the kernel (shows the panic screen)
 reboot          restart the machine
@@ -215,14 +244,17 @@ fn execute(line: &str) {
                 outln(&alloc::format!("  {name:<10} {size} bytes"));
             }
         }
-        "run" => match process::spawn(rest) {
-            Ok((_, handle)) => handle.join_sleeping(),
-            Err(e) => errln(&e),
-        },
+        "run" => {
+            let (spec, args) = rest.split_once(' ').map_or((rest, ""), |(a, b)| (a, b.trim()));
+            match process::spawn(spec, args) {
+                Ok((_, handle)) => handle.join_sleeping(),
+                Err(e) => errln(&e),
+            }
+        }
         // `spawn a b c` starts several programs at once, in the background.
         "spawn" => {
             for name in rest.split_whitespace() {
-                match process::spawn(name) {
+                match process::spawn(name, "") {
                     Ok((pid, _)) => outln(&alloc::format!("[process {pid} ({name}) started in the background]")),
                     Err(e) => errln(&e),
                 }
@@ -237,14 +269,162 @@ fn execute(line: &str) {
                 outln(&alloc::format!("  pid {pid:<4} {name}"));
             }
         }
+        "pwd" => outln(&cwd()),
+        "cd" => {
+            let target = abs(if rest.is_empty() { "/" } else { rest });
+            match VFS.lock().stat(&target) {
+                Ok(s) if s.kind == NodeKind::Dir => {
+                    let norm = nova_fs::path::components(&target).map(|c| nova_fs::path::join(&c)).unwrap_or(target);
+                    CWD.with(|c| *c = norm);
+                }
+                Ok(_) => fs_err(rest, nova_fs::FsError::NotDir),
+                Err(e) => fs_err(rest, e),
+            }
+        }
+        "ls" => {
+            let path = abs(if rest.is_empty() { "." } else { rest });
+            let mut vfs = VFS.lock();
+            match vfs.readdir(&path) {
+                Ok(entries) => {
+                    for e in entries {
+                        if e.kind == NodeKind::Dir {
+                            outln(&alloc::format!("  {:>9}  {}/", "<dir>", e.name));
+                        } else {
+                            let size = vfs.stat(&alloc::format!("{}/{}", path.trim_end_matches('/'), e.name)).map_or(0, |s| s.size);
+                            outln(&alloc::format!("  {size:>9}  {}", e.name));
+                        }
+                    }
+                }
+                Err(nova_fs::FsError::NotDir) => outln(&path),
+                Err(e) => fs_err(rest, e),
+            }
+        }
+        "cat" => match VFS.lock().read_file(&abs(rest)) {
+            Ok(data) => {
+                let shown = &data[..data.len().min(MAX_CAT)];
+                outln(String::from_utf8_lossy(shown).trim_end_matches('\n'));
+                if data.len() > MAX_CAT {
+                    outln("... (truncated)");
+                }
+            }
+            Err(e) => fs_err(rest, e),
+        },
+        "write" => match rest.split_once(' ') {
+            Some((path, text)) => {
+                let mut data = text.as_bytes().to_vec();
+                data.push(b'\n');
+                match VFS.lock().write_file(&abs(path), &data) {
+                    Ok(()) => outln(&alloc::format!("wrote {} bytes to {path}", data.len())),
+                    Err(e) => fs_err(path, e),
+                }
+            }
+            None => errln("usage: write FILE TEXT"),
+        },
+        "mkdir" => match VFS.lock().mkdir(&abs(rest)) {
+            Ok(()) => {}
+            Err(e) => fs_err(rest, e),
+        },
+        "rm" => match VFS.lock().remove(&abs(rest)) {
+            Ok(()) => {}
+            Err(e) => fs_err(rest, e),
+        },
+        "stat" => match VFS.lock().stat(&abs(rest)) {
+            Ok(s) => outln(&alloc::format!("{}: {} bytes ({})", rest, s.size, if s.kind == NodeKind::Dir { "directory" } else { "file" })),
+            Err(e) => fs_err(rest, e),
+        },
+        "cp" => match rest.split_once(' ') {
+            Some((src, dst)) => {
+                let mut vfs = VFS.lock();
+                match vfs.read_file(&abs(src)).and_then(|d| vfs.write_file(&abs(dst.trim()), &d).map(|()| d.len())) {
+                    Ok(n) => outln(&alloc::format!("copied {n} bytes")),
+                    Err(e) => fs_err(src, e),
+                }
+            }
+            None => errln("usage: cp SRC DST"),
+        },
+        "mounts" | "df" => {
+            for m in VFS.lock().mounts() {
+                match m.stats {
+                    Some(s) => outln(&alloc::format!(
+                        "  {:<8} {:<7} {} KiB free of {} KiB",
+                        m.path,
+                        m.fs_name,
+                        s.free_bytes / 1024,
+                        s.total_bytes / 1024
+                    )),
+                    None => outln(&alloc::format!("  {:<8} {}", m.path, m.fs_name)),
+                }
+            }
+        }
+        "disks" => {
+            let list = files::disks();
+            if list.is_empty() {
+                outln("no disks found");
+            }
+            for (i, model, sectors) in list {
+                let root = if files::root_disk() == Some(i) { "  (holds /)" } else { "" };
+                outln(&alloc::format!("  disk {i}: {model}, {} MiB{root}", (sectors * 512) >> 20));
+            }
+        }
+        "format" => {
+            let mut it = rest.split_whitespace();
+            match (it.next().and_then(|d| d.parse::<usize>().ok()), it.next()) {
+                (Some(disk), Some("erase")) => {
+                    if !process::list().is_empty() {
+                        errln("stop the running processes first");
+                    } else {
+                        match files::format_disk(disk) {
+                            Ok(()) => outln(&alloc::format!("formatted disk {disk} with NovaFS; it is now mounted at /")),
+                            Err(e) => fs_err("format", e),
+                        }
+                    }
+                }
+                _ => errln("usage: format DISK erase   (see 'disks'; this DESTROYS everything on that disk)"),
+            }
+        }
+        "install" => {
+            let mut vfs = VFS.lock();
+            let _ = vfs.mkdir("/bin");
+            let mut n = 0;
+            for (name, _) in programs::list() {
+                let image = programs::find(name).unwrap_or(&[]);
+                match vfs.write_file(&alloc::format!("/bin/{name}"), image) {
+                    Ok(()) => n += 1,
+                    Err(e) => fs_err(name, e),
+                }
+            }
+            outln(&alloc::format!("installed {n} programs in /bin"));
+        }
+        "sync" => match files::sync() {
+            Ok(()) => outln("synced"),
+            Err(e) => fs_err("sync", e),
+        },
+        "fscheck" => match files::root_disk() {
+            None => errln("the root file system is not on a disk"),
+            Some(disk) => {
+                let _ = files::sync();
+                match files::fsck_disk(disk) {
+                    Ok(problems) if problems.is_empty() => outln("file system is clean"),
+                    Ok(problems) => {
+                        errln(&alloc::format!("{} problem(s) found:", problems.len()));
+                        for p in problems.iter().take(20) {
+                            errln(&alloc::format!("  {p}"));
+                        }
+                    }
+                    Err(e) => fs_err("fscheck", e),
+                }
+            }
+        },
         "version" => outln(&alloc::format!("Nova kernel {} (x86_64, {} CPUs)", env!("CARGO_PKG_VERSION"), cpu::online_count())),
         "panic" => panic!("the 'panic' shell command was run"),
         "reboot" => {
+            let _ = files::sync();
             outln("restarting...");
             ps2::reset_cpu();
             errln("the keyboard controller did not reset the machine");
         }
         "halt" => {
+            let _ = files::sync();
             outln("halted.");
             crate::smp::halt_other_cpus();
             nova_x86::halt_forever();

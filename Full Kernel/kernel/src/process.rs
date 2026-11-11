@@ -24,6 +24,7 @@ use alloc::vec::Vec;
 use core::arch::global_asm;
 use core::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use nova_elf::{Elf, PF_W, PF_X};
+use nova_fs::vfs::Handle;
 use nova_paging::dynamic::{AddressSpace, TableMemory};
 use nova_paging::{NO_EXECUTE, PAGE_SIZE, USER, WRITABLE};
 use nova_x86::exception as exc;
@@ -79,9 +80,26 @@ impl TableMemory for ProcMemory {
     }
 }
 
+/// An open file: where it is and how far we have read or written.
+#[derive(Clone, Copy)]
+pub struct OpenFile {
+    pub handle: Handle,
+    pub offset: u64,
+    pub writable: bool,
+}
+
+/// File descriptors 0, 1 and 2 are the console; opened files start at 3.
+pub const FIRST_FILE_FD: u64 = 3;
+const MAX_OPEN_FILES: usize = 64;
+
 pub struct Process {
     pub pid: usize,
     pub name: String,
+    /// The command-line arguments (one string; the program splits it).
+    pub args: String,
+    /// The working directory relative paths are resolved against.
+    pub cwd: String,
+    files: SpinLock<Vec<Option<OpenFile>>>,
     root: u64,
     space: SpinLock<Option<AddressSpace<ProcMemory>>>,
     /// The current end of the heap (the next `sbrk` starts here).
@@ -92,6 +110,44 @@ pub struct Process {
 impl Process {
     pub fn root(&self) -> u64 {
         self.root
+    }
+
+    /// Adds an open file and returns its descriptor, or None if the table is full.
+    pub fn add_file(&self, file: OpenFile) -> Option<u64> {
+        self.files.with(|t| {
+            let slot = match t.iter().position(|f| f.is_none()) {
+                Some(i) => i,
+                None if t.len() < MAX_OPEN_FILES => {
+                    t.push(None);
+                    t.len() - 1
+                }
+                None => return None,
+            };
+            t[slot] = Some(file);
+            Some(slot as u64 + FIRST_FILE_FD)
+        })
+    }
+
+    /// A copy of the open file `fd`, if there is one.
+    pub fn file(&self, fd: u64) -> Option<OpenFile> {
+        let i = fd.checked_sub(FIRST_FILE_FD)? as usize;
+        self.files.with(|t| t.get(i).copied().flatten())
+    }
+
+    /// Replaces the saved state of open file `fd` (e.g. after a read moved the offset).
+    pub fn update_file(&self, fd: u64, f: impl FnOnce(&mut OpenFile)) {
+        if let Some(i) = fd.checked_sub(FIRST_FILE_FD) {
+            self.files.with(|t| {
+                if let Some(Some(file)) = t.get_mut(i as usize) {
+                    f(file);
+                }
+            });
+        }
+    }
+
+    pub fn close_file(&self, fd: u64) -> bool {
+        let Some(i) = fd.checked_sub(FIRST_FILE_FD) else { return false };
+        self.files.with(|t| t.get_mut(i as usize).is_some_and(|f| f.take().is_some()))
     }
 
     /// Checks that `[addr, addr+len)` is user memory that is mapped with the
@@ -186,7 +242,7 @@ pub fn list() -> Vec<(usize, String)> {
 
 /// Builds a process from an ELF image: new address space (sharing the
 /// kernel's upper half), program pages, heap bookkeeping and stack.
-fn create(name: &str, image: &[u8]) -> Result<(Arc<Process>, u64, u64), String> {
+fn create(name: &str, image: &[u8], args: &str, cwd: &str) -> Result<(Arc<Process>, u64, u64), String> {
     let elf = Elf::parse(image).map_err(|e| alloc::format!("not a valid program: {e}"))?;
     // Policy: user code lives in the lower half, above page 0, below the stack,
     // and no page may be both writable and executable.
@@ -256,6 +312,9 @@ fn create(name: &str, image: &[u8]) -> Result<(Arc<Process>, u64, u64), String> 
     let proc = Arc::new(Process {
         pid,
         name: String::from(name),
+        args: String::from(args),
+        cwd: String::from(cwd),
+        files: SpinLock::new(Vec::new()),
         root,
         space: SpinLock::new(Some(space)),
         brk: AtomicU64::new(HEAP_START),
@@ -265,11 +324,32 @@ fn create(name: &str, image: &[u8]) -> Result<(Arc<Process>, u64, u64), String> 
     Ok((proc, elf.entry, STACK_TOP - 8))
 }
 
-/// Starts the named embedded program as a new process. Returns its pid and a
-/// handle to wait for it.
-pub fn spawn(name: &str) -> Result<(usize, sched::JoinHandle), String> {
-    let image = crate::programs::find(name).ok_or_else(|| alloc::format!("no such program '{name}' (try 'progs')"))?;
-    let (proc, entry, sp) = create(name, image)?;
+/// Finds the program image for `spec`: a path (anything with a `/`), else a
+/// built-in program, else `/bin/NAME` on the file system.
+fn load_image(spec: &str, cwd: &str) -> Result<(String, Vec<u8>), String> {
+    if spec.contains('/') {
+        let path = crate::files::absolute(cwd, spec);
+        let data = crate::files::VFS.lock().read_file(&path).map_err(|e| alloc::format!("{path}: {e}"))?;
+        let name = path.rsplit('/').next().unwrap_or(&path);
+        return Ok((String::from(name), data));
+    }
+    if let Some(image) = crate::programs::find(spec) {
+        return Ok((String::from(spec), image.to_vec()));
+    }
+    let path = alloc::format!("/bin/{spec}");
+    match crate::files::VFS.lock().read_file(&path) {
+        Ok(data) => Ok((String::from(spec), data)),
+        Err(_) => Err(alloc::format!("no such program '{spec}' (try 'progs', or give a path)")),
+    }
+}
+
+/// Starts a program (see [`load_image`]) as a new process with `args`.
+/// Returns its pid and a handle to wait for it.
+pub fn spawn(spec: &str, args: &str) -> Result<(usize, sched::JoinHandle), String> {
+    let cwd = shell::cwd();
+    let (name, image) = load_image(spec, &cwd)?;
+    let name = name.as_str();
+    let (proc, entry, sp) = create(name, &image, args, &cwd)?;
     let pid = proc.pid;
     PROCS.with(|p| p.push(proc.clone()));
     let handle = sched::spawn_user(name, proc.clone(), move || enter_user(entry, sp));

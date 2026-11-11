@@ -337,6 +337,95 @@ def user_test(qmp, serial) -> str | None:
     return None
 
 
+def disk_test(qmp, serial, phase) -> str | None:
+    """Phase 1 formats the (blank) virtual disk, installs programs and writes files.
+    Phase 2 boots again on the SAME disk and checks everything survived."""
+
+    def wait_for(pattern, seconds=20):
+        end = time.time() + seconds
+        while time.time() < end:
+            m = re.search(pattern, read_log(serial))
+            if m:
+                return m
+            time.sleep(0.1)
+        return None
+
+    def count(pattern):
+        return len(re.findall(pattern, read_log(serial)))
+
+    def run(command, expect, seconds=20):
+        before = count(expect)
+        type_text(qmp, command + "\n")
+        end = time.time() + seconds
+        while time.time() < end:
+            if count(expect) > before:
+                return None
+            time.sleep(0.1)
+        return f"after {command!r} expected {expect!r}"
+
+    if not wait_for(r"shell: ready"):
+        return "the shell never started"
+    log = read_log(serial)
+    if "ahci: disk 1:" not in log:
+        return "the second (Nova) disk was not found"
+
+    if phase == 1:
+        if "no NovaFS on any disk" not in log:
+            return "a fresh disk should not contain a NovaFS"
+        m = wait_for(r"con: +disk (\d+): QEMU HARDDISK, 64 MiB") or None
+        type_text(qmp, "disks\n")
+        m = wait_for(r"con: +disk (\d+): QEMU HARDDISK, 64 MiB")
+        if not m:
+            return "the 64 MiB disk was not listed"
+        idx = m.group(1)
+        steps = [
+            (f"format {idx} erase", r"con: formatted disk \d+ with NovaFS"),
+            ("mounts", r"con: +/ +novafs"),
+            ("install", r"con: installed 10 programs in /bin"),
+            ("mkdir /docs", None),
+            ("write /docs/note.txt persistent hello world", r"con: wrote \d+ bytes to /docs/note.txt"),
+            ("cat /docs/note.txt", r"con: persistent hello world"),
+            ("cd /docs", None),
+            ("pwd", r"con: /docs"),
+            ("ls", r"con: +\d+ +note.txt"),
+            ("cd /", None),
+            ("run /bin/hello", r"Hello from user space! I am process \d+\."),
+            ("run fsdemo", r"con: fsdemo ok: wrote, read, seeked, listed and deleted \d+ bytes"),
+            ("run fsbig", r"con: fsbig ok: 5 MiB written, verified byte for byte, deleted"),
+            ("run cat /docs/note.txt", r"\(cat\) exited with code 0"),
+            ("run ls /bin", r"con: +\d+ +hello"),
+            ("fscheck", r"con: file system is clean"),
+            ("rm /nonexistent", r"con: /nonexistent: no such file or directory"),
+            ("sync", r"con: synced"),
+        ]
+    else:
+        if "vfs: mounted NovaFS from disk 1 at /" not in log:
+            return "the NovaFS on the disk was not mounted at boot"
+        steps = [
+            ("cat /docs/note.txt", r"con: persistent hello world"),
+            ("ls /bin", r"con: +\d+ +hello"),
+            ("run /bin/hello", r"Hello from user space! I am process \d+\."),
+            ("run ls /docs", r"con: +\d+ +note.txt"),
+            ("fscheck", r"con: file system is clean"),
+            ("df", r"con: +/ +novafs +\d+ KiB free"),
+            ("rm /docs/note.txt", None),
+            ("ls /docs", None),
+            ("fscheck", r"con: file system is clean"),
+            ("sync", r"con: synced"),
+        ]
+    for command, expect in steps:
+        if expect is None:
+            type_text(qmp, command + "\n")
+            time.sleep(0.4)
+            continue
+        err = run(command, expect)
+        if err:
+            return err
+    if phase == 2 and count(r"con: +\d+ +note.txt") > 1 and "note.txt" in "".join(re.findall(r"nova> ls /docs\n(?:con: .*\n)*", read_log(serial))[-1:]):
+        return "rm did not remove the file"
+    return None
+
+
 def main() -> int:
     import argparse
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -346,12 +435,16 @@ def main() -> int:
                          "full boot (repeatable)")
     ap.add_argument("--cpus", type=int, default=None, help="virtual CPUs (default 4, or NOVA_CPUS)")
     ap.add_argument("--shot", default="boot_test", help="screenshot name (build/<name>.png)")
+    ap.add_argument("--disk-phase", type=int, choices=(1, 2), help="storage test: 1 = format + write files, 2 = boot again and check they persist")
+    ap.add_argument("--fresh-disk", action="store_true", help="start from a blank virtual disk")
     ap.add_argument("--user", action="store_true", help="after boot, run user-space programs from the shell")
     ap.add_argument("--shell", action="store_true", help="after boot, type commands into the shell through QEMU's keyboard")
     ap.add_argument("--mouse", action="store_true",
                     help="after boot, move the mouse and click through QEMU and check the kernel saw it")
     opts = ap.parse_args()
     qemu = q.find_qemu()
+    if opts.fresh_disk:
+        q.ensure_disk(fresh=True)
     serial = q.BUILD / "serial.log"
     serial.unlink(missing_ok=True)
     port = free_port()
@@ -402,6 +495,16 @@ def main() -> int:
                 reason = "shell test: " + problem
             else:
                 print("Shell: typed commands, edited with backspace, used history and Ctrl+C; every reply was correct")
+
+        if ok and opts.disk_phase and not opts.expect:
+            problem = disk_test(qmp, serial, opts.disk_phase)
+            if problem:
+                ok = False
+                reason = f"disk test (phase {opts.disk_phase}): " + problem
+            elif opts.disk_phase == 1:
+                print("Disk (phase 1): formatted, installed programs, wrote files, ran from disk, fsck clean")
+            else:
+                print("Disk (phase 2): after a reboot the files, the installed programs and a clean fsck are all still there")
 
         if ok and opts.user and not opts.expect:
             problem = user_test(qmp, serial)

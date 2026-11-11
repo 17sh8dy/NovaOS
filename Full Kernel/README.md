@@ -53,6 +53,13 @@ through system calls, and are killed (not the kernel) when they misbehave. In th
 `run hello`, `run greet`, `spawn counter counter`, `run crash`, `run evil`. User programs are built by
 `tools\build_user.ps1` (called by `build.ps1`) into `kernel\user_bin`, which is git-ignored.
 
+**Stage 9: storage + files — done (SATA/AHCI; NVMe not yet).** Nova finds its disks over PCI, has its own
+file system (NovaFS) with a VFS, and keeps files across reboots. `run.ps1` gives the virtual machine a
+second, blank 64 MiB SATA disk (`build\disk.img`). In the shell: `disks`, `format 1 erase` (DESTROYS that
+disk), `install` (copies the programs to `/bin`), `write /docs/a.txt hi`, `cat`, `ls`, `mkdir`, `rm`,
+`fscheck`, `run /bin/hello`. After the next boot the disk mounts itself. **Never run `format` on a real
+PC's disk unless you mean to erase it.**
+
 Next stages are in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Layout
@@ -69,6 +76,7 @@ Next stages are in [docs/ROADMAP.md](docs/ROADMAP.md).
 | `crates/acpi` | ACPI table parser (RSDP, XSDT/RSDT, MADT) |
 | `crates/apic` | Local APIC / IO-APIC register encodings, timer maths |
 | `user/` | The user-space runtime and programs (`user/src/bin`) |
+| `crates/fs` | NovaFS (on-disk file system) + fsck, RAM file system, VFS |
 | `crates/kbd` | Keyboard scancode decoding, US layout, modifiers |
 | `crates/console` | Text grid (scrolling, dirty rows) + line editor |
 | `crates/ps2` | PS/2 mouse packet decoder + pointer tracking |

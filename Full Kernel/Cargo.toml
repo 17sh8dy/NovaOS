@@ -10,6 +10,7 @@ members = [
     "crates/acpi",
     "crates/apic",
     "crates/kbd",
+    "crates/fs",
     "crates/console",
     "crates/x86",
     "boot",
@@ -18,7 +19,7 @@ members = [
 ]
 # `cargo test` from the root runs the host-testable libraries only.
 # The bootloader and kernel are built for their own targets by tools/build.ps1.
-default-members = ["crates/bootinfo", "crates/elf", "crates/paging", "crates/pmm", "crates/heap", "crates/ps2", "crates/acpi", "crates/apic", "crates/kbd", "crates/console", "crates/x86"]
+default-members = ["crates/bootinfo", "crates/elf", "crates/paging", "crates/pmm", "crates/heap", "crates/ps2", "crates/acpi", "crates/apic", "crates/kbd", "crates/fs", "crates/console", "crates/x86"]
 
 [workspace.package]
 version = "0.1.0"

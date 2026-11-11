@@ -12,10 +12,40 @@ Each stage ends with something that boots and is checked by `tools\test.ps1`.
 | 6 | Keyboard + console ✅ | PS/2 keyboard (USB later), a scrolling text console on the framebuffer |
 | 7 | Tasks ✅ | Kernel threads and a scheduler; then SMP (start the other cores) |
 | 8 | User space ✅ | Ring 3, system calls, ELF programs (built into the kernel until stage 9 gives us a disk) |
-| 9 | Storage + files | AHCI/NVMe driver, a filesystem, a VFS |
+| 9 | Storage + files ✅ (AHCI; NVMe still to do) | AHCI/NVMe driver, a filesystem, a VFS |
 | 10 | Nova shell | First real Nova user interface running on Nova itself |
 
 Later: USB (xHCI), networking, GPU, real-hardware testing on a USB stick.
+
+## Stage 9 notes
+
+* **Bus + disk:** `kernel/src/pci.rs` enumerates PCI through the classic 0xCF8/0xCFC ports (works on any
+  x86 PC). `kernel/src/ahci.rs` drives SATA disks: per port a command list, a received-FIS area and a
+  command table; IDENTIFY, READ/WRITE DMA EXT (LBA48) and FLUSH CACHE EXT, one slot, polled completion
+  with timeouts and port restart on error. 512-byte-sector disks only. `kmutex.rs` is a sleeping mutex
+  (yields instead of spinning, keeps interrupts on) so a slow disk never blocks timer/keyboard/mouse.
+* **`crates/fs`** (pure logic, 25 host tests over a RAM disk): **NovaFS** (4 KiB blocks; inodes with 12
+  direct + indirect + double-indirect blocks, files up to ~4 GiB, sparse holes; directories as 64-byte
+  entry files; inode/block bitmaps; superblock with CRC; no journal: operations are ordered so a crash
+  leaks storage rather than dangling names), an **fsck** that cross-checks bitmaps, block ownership,
+  directory entries and link counts (a random-workout test compares against an in-memory model and runs
+  fsck throughout), **TmpFs** (RAM) and the **VFS** (mount table, longest-prefix path resolution,
+  `.`/`..` handled lexically, mount points appear in listings).
+* **Boot:** the first disk with a NovaFS is mounted at `/`; otherwise `/` is RAM until you `format`.
+  `/tmp` is always RAM. `format DISK erase` needs the explicit word and refuses while processes run;
+  nothing writes to a disk unless asked to.
+* **Syscalls:** open (write/create/truncate flags), close, seek, read/write on files, readdir, stat,
+  mkdir, unlink, getargs; per-process descriptor table (3..) and working directory. Programs can be run
+  from the disk (`run /bin/hello`, or just `run hello` after `install`).
+* **Shell:** `pwd cd ls cat write mkdir rm stat cp mounts/df disks format install sync fscheck`.
+* **Tests** (`test.ps1`): phase 1 formats a blank virtual disk, installs programs, writes files, runs a
+  program from disk, runs `fsdemo` and `fsbig` (a 5 MiB file through double-indirect blocks, verified
+  byte for byte), fsck clean; phase 2 boots again on the *same* disk image and checks that everything
+  persisted, then fsck again. QEMU gets a second SATA disk (`build\disk.img`, 64 MiB).
+* Gaps: **NVMe not done** (many real PCs have only NVMe), no AHCI interrupts/NCQ, no partition table
+  (the whole disk is the file system), no FAT/ext support to read other systems' disks, no rename, no
+  permissions/timestamps, no journal, no block cache (every access goes to the disk), writes are not
+  flushed except by `sync`/shutdown, and a file system on a real disk is untested.
 
 ## Stage 8 notes
 

@@ -135,6 +135,26 @@ pub unsafe fn inb(port: u16) -> u8 {
     value
 }
 
+/// Writes a 32-bit value to an I/O port.
+///
+/// # Safety
+/// As [`outb`].
+#[inline]
+pub unsafe fn outl(port: u16, value: u32) {
+    unsafe { asm!("out dx, eax", in("dx") port, in("eax") value, options(nomem, nostack, preserves_flags)) }
+}
+
+/// Reads a 32-bit value from an I/O port.
+///
+/// # Safety
+/// As [`inb`].
+#[inline]
+pub unsafe fn inl(port: u16) -> u32 {
+    let value: u32;
+    unsafe { asm!("in eax, dx", in("dx") port, out("eax") value, options(nomem, nostack, preserves_flags)) }
+    value
+}
+
 /// Reads a model-specific register.
 ///
 /// # Safety

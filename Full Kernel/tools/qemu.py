@@ -57,6 +57,21 @@ def accel() -> str:
     return os.environ.get("NOVA_ACCEL", "whpx")
 
 
+DISK = BUILD / "disk.img"
+DISK_MIB = 64
+
+
+def ensure_disk(fresh: bool = False) -> Path:
+    """The virtual SATA disk Nova can format and keep files on (a sparse 64 MiB file).
+    `fresh` throws away its contents (a blank disk)."""
+    BUILD.mkdir(parents=True, exist_ok=True)
+    if fresh or not DISK.exists():
+        DISK.unlink(missing_ok=True)
+        with open(DISK, "wb") as f:
+            f.truncate(DISK_MIB << 20)
+    return DISK
+
+
 def default_cpus() -> int:
     """How many CPUs the virtual machine has (NOVA_CPUS overrides; default 4)."""
     return int(os.environ.get("NOVA_CPUS", "4"))
@@ -69,6 +84,7 @@ def base_args(qemu: Path, memory: str = "256M", cpus: int | None = None) -> list
     if not (ESP / "EFI" / "BOOT" / "BOOTX64.EFI").is_file():
         raise SystemExit("build/esp is missing; run tools/build.ps1 first")
     firmware(qemu)
+    ensure_disk()
     return [
         str(qemu),
         "-machine", "q35",
@@ -78,6 +94,9 @@ def base_args(qemu: Path, memory: str = "256M", cpus: int | None = None) -> list
         "-drive", "if=pflash,format=raw,readonly=on,file=firmware/code.fd",
         "-drive", "if=pflash,format=raw,file=firmware/vars.fd",
         "-drive", "format=raw,file=fat:rw:esp",
+        # A second SATA disk for Nova's own file system (the boot volume above is the first).
+        "-drive", "if=none,id=nova0,format=raw,file=disk.img",
+        "-device", "ide-hd,drive=nova0,bus=ide.1",
         "-nic", "none",
         "-no-reboot",
     ]

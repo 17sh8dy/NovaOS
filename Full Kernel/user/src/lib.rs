@@ -19,7 +19,25 @@ pub mod nr {
     pub const SLEEP_MS: u64 = 5;
     pub const UPTIME_MS: u64 = 6;
     pub const SBRK: u64 = 7;
+    pub const OPEN: u64 = 8;
+    pub const CLOSE: u64 = 9;
+    pub const SEEK: u64 = 10;
+    pub const READDIR: u64 = 11;
+    pub const STAT: u64 = 12;
+    pub const MKDIR: u64 = 13;
+    pub const UNLINK: u64 = 14;
+    pub const GETARGS: u64 = 15;
 }
+
+/// `open` flags.
+pub const O_WRITE: u64 = 1;
+pub const O_CREATE: u64 = 2;
+pub const O_TRUNC: u64 = 4;
+
+/// `seek` origins.
+pub const SEEK_SET: u64 = 0;
+pub const SEEK_CUR: u64 = 1;
+pub const SEEK_END: u64 = 2;
 
 /// Error numbers returned (negated) by the kernel.
 pub mod errno {
@@ -49,6 +67,86 @@ pub unsafe fn syscall3(nr: u64, a: u64, b: u64, c: u64) -> i64 {
         );
     }
     ret
+}
+
+/// Raw system call with four arguments (the fourth goes in `r10`).
+///
+/// # Safety
+/// As [`syscall3`].
+#[inline]
+pub unsafe fn syscall4(nr: u64, a: u64, b: u64, c: u64, d: u64) -> i64 {
+    let ret: i64;
+    unsafe {
+        asm!(
+            "syscall",
+            inlateout("rax") nr as i64 => ret,
+            in("rdi") a,
+            in("rsi") b,
+            in("rdx") c,
+            in("r10") d,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+/// Opens a file; returns a descriptor (>= 3) or -errno.
+pub fn open(path: &str, flags: u64) -> i64 {
+    // SAFETY: the kernel checks the pointer and length.
+    unsafe { syscall3(nr::OPEN, path.as_ptr() as u64, path.len() as u64, flags) }
+}
+
+pub fn close(fd: u64) -> i64 {
+    // SAFETY: one integer argument.
+    unsafe { syscall3(nr::CLOSE, fd, 0, 0) }
+}
+
+/// Moves a file's read/write position; returns the new position or -errno.
+pub fn seek(fd: u64, offset: i64, whence: u64) -> i64 {
+    // SAFETY: integer arguments only.
+    unsafe { syscall3(nr::SEEK, fd, offset as u64, whence) }
+}
+
+/// Lists a directory as text lines (`d NAME` / `f NAME SIZE`) into `buf`.
+pub fn readdir(path: &str, buf: &mut [u8]) -> i64 {
+    // SAFETY: the kernel checks both buffers.
+    unsafe { syscall4(nr::READDIR, path.as_ptr() as u64, path.len() as u64, buf.as_mut_ptr() as u64, buf.len() as u64) }
+}
+
+/// (size in bytes, is a directory) of a path, or -errno.
+pub fn stat(path: &str) -> Result<(u64, bool), i64> {
+    let mut rec = [0u8; 16];
+    // SAFETY: the kernel checks the pointers.
+    let r = unsafe { syscall3(nr::STAT, path.as_ptr() as u64, path.len() as u64, rec.as_mut_ptr() as u64) };
+    if r < 0 {
+        return Err(r);
+    }
+    Ok((u64::from_le_bytes(rec[..8].try_into().unwrap()), u64::from_le_bytes(rec[8..].try_into().unwrap()) == 1))
+}
+
+pub fn mkdir(path: &str) -> i64 {
+    // SAFETY: the kernel checks the pointer and length.
+    unsafe { syscall3(nr::MKDIR, path.as_ptr() as u64, path.len() as u64, 0) }
+}
+
+/// Removes a file or an empty directory.
+pub fn unlink(path: &str) -> i64 {
+    // SAFETY: the kernel checks the pointer and length.
+    unsafe { syscall3(nr::UNLINK, path.as_ptr() as u64, path.len() as u64, 0) }
+}
+
+/// Copies the command-line arguments into `buf`; returns how many bytes.
+pub fn getargs(buf: &mut [u8]) -> i64 {
+    // SAFETY: the kernel checks the pointer and length.
+    unsafe { syscall3(nr::GETARGS, buf.as_mut_ptr() as u64, buf.len() as u64, 0) }
+}
+
+/// The program's arguments as text (empty if none), using `buf` as storage.
+pub fn args(buf: &mut [u8; 256]) -> &str {
+    let n = getargs(buf).max(0) as usize;
+    core::str::from_utf8(&buf[..n]).unwrap_or("").trim()
 }
 
 /// Ends the program.
