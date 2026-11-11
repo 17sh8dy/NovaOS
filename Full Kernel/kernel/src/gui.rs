@@ -111,7 +111,7 @@ pub fn init(mut screen: Screen, info: &BootInfo, free_mib: u64, cpus: usize) {
     y += 2 * star + 8 * u;
     screen.text_centered(y, 4 * u, ink, "NOVA OS");
     y += font::HEIGHT * 4 * u + 6 * u;
-    screen.text_centered(y, 2 * u, dim, "FULL KERNEL - STAGE 6: KEYBOARD + CONSOLE");
+    screen.text_centered(y, 2 * u, dim, "FULL KERNEL - STAGE 8: USER SPACE");
     y += font::HEIGHT * 2 * u + 6 * u;
     let lines = [
         crate::fmt_line!("{}x{}  -  {} MIB FREE  -  KERNEL AT {:#X}", info.framebuffer.width, info.framebuffer.height, free_mib, info.kernel_virt),
