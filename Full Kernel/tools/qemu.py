@@ -57,7 +57,12 @@ def accel() -> str:
     return os.environ.get("NOVA_ACCEL", "whpx")
 
 
-def base_args(qemu: Path, memory: str = "256M") -> list[str]:
+def default_cpus() -> int:
+    """How many CPUs the virtual machine has (NOVA_CPUS overrides; default 4)."""
+    return int(os.environ.get("NOVA_CPUS", "4"))
+
+
+def base_args(qemu: Path, memory: str = "256M", cpus: int | None = None) -> list[str]:
     """QEMU arguments. Paths are relative to BUILD, which must be the cwd
     (QEMU's -drive syntax can't take a path with ',' and the vvfat driver is
     simplest with a relative directory)."""
@@ -69,6 +74,7 @@ def base_args(qemu: Path, memory: str = "256M") -> list[str]:
         "-machine", "q35",
         "-accel", accel(),
         "-m", memory,
+        "-smp", str(cpus or default_cpus()),
         "-drive", "if=pflash,format=raw,readonly=on,file=firmware/code.fd",
         "-drive", "if=pflash,format=raw,file=firmware/vars.fd",
         "-drive", "format=raw,file=fat:rw:esp",

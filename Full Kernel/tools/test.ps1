@@ -42,7 +42,9 @@ try {
         @{ Kind = 'lowmem'; Expect = @('#PF page fault', '0x0000000000100000', 'page not present, read') },
         @{ Kind = 'ro';    Expect = @('#PF page fault', 'protection violation, write') },
         @{ Kind = 'nx';    Expect = @('#PF page fault', 'instruction fetch') },
-        @{ Kind = 'stray'; Expect = @('irq: stray interrupt on vector 0x81', 'NOVA KERNEL READY') }
+        @{ Kind = 'stray'; Expect = @('irq: stray interrupt on vector 0x81', 'NOVA KERNEL READY') },
+        @{ Kind = 'tdiv';  Expect = @('NOVA KERNEL EXCEPTION', '#DE divide error', 'on CPU', ', thread ') },
+        @{ Kind = 'tstack'; Expect = @('NOVA KERNEL EXCEPTION', '#DF double fault', 'handler ran on IST 1', ', thread ') }
     )
     try {
         foreach ($f in $faults) {

@@ -27,6 +27,7 @@ MUST_SEE = [
     "Nova kernel",                    # kernel's first line
     "memory map:",                    # kernel read the BootInfo
     "breakpoint self-test passed",    # stage 2: own IDT works
+    "sched: self-test passed",        # stage 7: threads, preemption, SMP
     "timer: tick test passed",        # stage 5: APIC timer + interrupts work
     "pmm: self-test passed",          # stage 3: frame allocator works on real memory
     "NOVA KERNEL READY",              # kernel finished
@@ -159,6 +160,7 @@ def main() -> int:
     ap.add_argument("--expect", metavar="TEXT", action="append",
                     help="negative test: pass if ALL the given TEXTs appear in the log instead of a "
                          "full boot (repeatable)")
+    ap.add_argument("--cpus", type=int, default=None, help="virtual CPUs (default 4, or NOVA_CPUS)")
     ap.add_argument("--shot", default="boot_test", help="screenshot name (build/<name>.png)")
     ap.add_argument("--mouse", action="store_true",
                     help="after boot, move the mouse and click through QEMU and check the kernel saw it")
@@ -167,7 +169,7 @@ def main() -> int:
     serial = q.BUILD / "serial.log"
     serial.unlink(missing_ok=True)
     port = free_port()
-    args = q.base_args(qemu, opts.memory) + [
+    args = q.base_args(qemu, opts.memory, opts.cpus) + [
         "-display", "none",
         "-serial", "file:serial.log",
         "-qmp", f"tcp:127.0.0.1:{port},server=on,wait=off",

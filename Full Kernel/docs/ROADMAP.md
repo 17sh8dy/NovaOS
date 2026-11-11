@@ -10,7 +10,7 @@ Each stage ends with something that boots and is checked by `tools\test.ps1`.
 | 4 | Kernel virtual memory + heap ✅ (+ PS/2 mouse, pulled forward) | Kernel-owned page tables (drop the identity map), `alloc` support (Box, Vec) |
 | 5 | Interrupts + time ✅ | ACPI (MADT) parsing, Local APIC + IOAPIC, timer tick, `hlt`-based idle |
 | 6 | Keyboard + console | PS/2 keyboard (USB later), a scrolling text console on the framebuffer |
-| 7 | Tasks | Kernel threads and a scheduler; then SMP (start the other cores) |
+| 7 | Tasks ✅ | Kernel threads and a scheduler; then SMP (start the other cores) |
 | 8 | User space | Ring 3, system calls, ELF programs loaded from disk |
 | 9 | Storage + files | AHCI/NVMe driver, a filesystem, a VFS |
 | 10 | Nova shell | First real Nova user interface running on Nova itself |
@@ -91,6 +91,32 @@ Later: USB (xHCI), networking, GPU, real-hardware testing on a USB stick.
   counter is the only time source); ACPI tables stay in reserved memory (we keep using them);
   tables outside the direct map are reported as unreadable rather than mapped on demand; MSI/PCI
   interrupts and a real keyboard IRQ come with their drivers.
+
+## Stage 7 notes (done before stage 6: keyboard + console is still to do)
+
+* `kernel/src/sched.rs`: kernel threads (`spawn`, `join`, `yield_now`, `sleep_ms`, `exit`), each with a
+  32 KiB stack and an unmapped guard page; preemptive round-robin from one ready queue, one tick
+  (10 ms) per slice; idle CPUs `hlt` in a per-CPU idle thread. A thread that was just switched away
+  from is only made visible to other CPUs by `finish_switch` on the *next* thread's side (it is still
+  running on its own stack until then). Dead threads' stacks go to a pool; kernel mappings are never
+  unmapped (that needs TLB shootdown IPIs, added when something needs it).
+* `kernel/src/cpu.rs`: per-CPU GDT/TSS/IST stacks and a `PerCpu` record via the `gs` base
+  (`this_cpu()`); the IDT is shared.
+* `kernel/src/smp.rs`: real-mode trampoline copied to physical 0x8000 (real -> protected -> long
+  mode on a temporary page table that identity-maps that page and shares the kernel's upper half),
+  INIT + STARTUP IPIs one CPU at a time, each AP then switches to the kernel's tables, builds its own
+  tables, starts its APIC timer at the boot CPU's measured rate and idles in the scheduler.
+* Fatal errors stop the other CPUs with an NMI IPI first; reports name the CPU and thread.
+* The IRQ dispatcher now sends the EOI *before* the handler (the timer handler may switch threads and
+  not return for a while). Fine for edge-triggered interrupts; level-triggered ones need care later.
+* Tests: `sched::self_test` (64 short threads twice with stack reuse, `sleep_ms(50)` = 5 ticks, twice
+  as many never-yielding busy threads as CPUs: all must run, all CPUs must be used, atomic and
+  spinlock counters must be exact); fault kinds `tdiv` / `tstack` inside a thread; QEMU runs with
+  `-smp 4` (`NOVA_CPUS` / `run.ps1 -Cpus` / `boot_test.py --cpus`).
+* Gaps: one global run queue and lock (no per-CPU queues, no CPU affinity, no priorities); no
+  blocking primitives (mutex, condvar, channels) beyond yield/sleep/join; idle CPUs wait for their
+  next tick instead of being woken by an IPI; xAPIC only; AP start-up is serial and gives up after
+  one failure; not tried on real hardware (many cores, x2APIC, odd firmware).
 
 ## Known gaps in stage 1
 

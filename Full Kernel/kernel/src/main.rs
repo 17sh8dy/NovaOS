@@ -31,6 +31,8 @@ mod log;
 mod pmm;
 mod ps2;
 mod screen;
+mod sched;
+mod smp;
 mod vm;
 
 use nova_bootinfo::{BootInfo, MemoryKind, total_of};
@@ -238,10 +240,18 @@ fn kmain(boot_copy: &'static BootInfo) -> ! {
     };
 
     if irq_mode {
+        // Threads and the scheduler exist before interrupts come on, because
+        // the timer tick drives them.
+        sched::init();
         // Interrupts have been off since the bootloader; turn them on and
         // check the timer really ticks at the rate it was set to.
         nova_x86::sti();
         tick_test();
+
+        // ---- Stage 7: more CPUs, then prove threads and the scheduler work --
+        start_other_cpus();
+        run_scheduler_tests();
+        faults::run_late_if_requested();
     }
 
     kprintln!("{READY_MARKER}");
@@ -317,6 +327,38 @@ fn start_interrupts() -> bool {
         }
     }
     true
+}
+
+/// Starts the other CPUs the firmware lists.
+fn start_other_cpus() {
+    // SAFETY: boot CPU, scheduler/APIC/heap ready, kernel page tables active.
+    match unsafe { smp::start_aps() } {
+        Ok(s) if s.failed == 0 => kprintln!("smp: all {} CPUs online", s.online),
+        Ok(s) => kprintln!("smp: {} CPUs online, {} failed to start", s.online, s.failed),
+        Err(e) => kprintln!("smp: could not start the other CPUs: {e}"),
+    }
+}
+
+/// Threads, preemption, sleeping, locks, and (with several CPUs) parallelism.
+fn run_scheduler_tests() {
+    let cpus = cpu::online_count();
+    match sched::self_test(cpus) {
+        Ok(t) => {
+            let s = sched::stats();
+            kprintln!(
+                "sched: self-test passed ({} busy threads time-sliced over {} CPU(s), {} used; sleep(50 ms) = {} ticks; {} context switches; {} stacks created, {} pooled, {} threads left)",
+                t.spinners,
+                cpus,
+                t.cpus_used,
+                t.sleep_ticks,
+                t.switches,
+                t.stacks_created,
+                s.stacks_pooled,
+                s.threads
+            );
+        }
+        Err(e) => panic!("scheduler self-test FAILED: {e}"),
+    }
 }
 
 /// With interrupts on, the timer must advance at its set rate: count ticks
@@ -481,6 +523,7 @@ static PANICKING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBoo
 
 #[panic_handler]
 fn panic(p: &core::panic::PanicInfo) -> ! {
+    smp::halt_other_cpus();
     // SAFETY: we never return, so stealing the log lock is fine.
     unsafe { log::force_unlock() };
     if PANICKING.swap(true, core::sync::atomic::Ordering::SeqCst) {

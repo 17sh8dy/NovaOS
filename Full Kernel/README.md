@@ -41,6 +41,10 @@ with it: boot in QEMU and move the mouse; a pointer follows it and a read-out sh
 from the legacy PICs to the local APIC and IO-APIC, runs a calibrated 100 Hz timer, takes the
 mouse by interrupt, and idles with `hlt` instead of spinning. The pointer read-out shows uptime.
 
+**Stage 7: threads + SMP — done** (ahead of stage 6, the keyboard + console). Kernel threads with
+guard-paged stacks, a preemptive scheduler, and all CPUs started (4 in the default QEMU setup, see
+`run.ps1 -Cpus`). A crash report says which CPU and thread it happened on.
+
 Next stages are in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Layout

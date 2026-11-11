@@ -18,17 +18,47 @@
 //!   ro     write to the kernel's own code                  -> #PF, protection violation (W^X)
 //!   nx     jump into the heap                              -> #PF, instruction fetch (NX)
 //!   stray  software interrupt on a vector nobody owns      -> logged, then boot continues
+//!   tdiv   divide by zero inside a kernel thread (any CPU)  -> #DE, report names CPU + thread
+//!   tstack stack overflow inside a kernel thread            -> #DF on that CPU's IST 1
 
 use core::arch::asm;
 
-pub const KINDS: [&str; 13] = ["div", "ud", "gp", "pf", "df", "stack", "nmi", "panic", "null", "lowmem", "ro", "nx", "stray"];
+pub const KINDS: [&str; 15] = ["div", "ud", "gp", "pf", "df", "stack", "nmi", "panic", "null", "lowmem", "ro", "nx", "stray", "tdiv", "tstack"];
 
 unsafe extern "C" {
     static __text_start: u8;
 }
 
+/// Faults that need the scheduler: run inside a kernel thread, after the
+/// scheduler tests, so the report names the CPU and thread it happened on.
+pub fn run_late_if_requested() {
+    let kind = match option_env!("NOVA_FAULT") {
+        Some(k @ ("tdiv" | "tstack")) => k,
+        _ => return,
+    };
+    crate::kprintln!("fault-test: deliberately triggering '{kind}' inside a kernel thread");
+    let h = crate::sched::spawn("fault-test", move || {
+        // SAFETY: deliberate faults that the kernel must report.
+        unsafe {
+            match kind {
+                "tdiv" => asm!("div {z}", z = in(reg) 0u64, in("rax") 1u64, in("rdx") 0u64, lateout("rax") _, lateout("rdx") _),
+                _ => {
+                    core::hint::black_box(recurse(0));
+                }
+            }
+        }
+    });
+    if let Some(h) = h {
+        h.join();
+    }
+    crate::kprintln!("fault-test: '{kind}' returned without a fault (this is a bug)");
+}
+
 pub fn run_if_requested() {
     let Some(kind) = option_env!("NOVA_FAULT") else { return };
+    if matches!(kind, "tdiv" | "tstack") {
+        return; // runs later, in a thread
+    }
     crate::kprintln!("fault-test: deliberately triggering '{kind}'");
     // SAFETY: every arm is a deliberate fault that the kernel must report.
     unsafe {

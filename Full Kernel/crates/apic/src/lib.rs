@@ -91,6 +91,45 @@ impl Redirection {
     }
 }
 
+/// The interrupt command register (ICR), used to send inter-processor interrupts.
+pub mod icr {
+    /// Register offsets: the destination goes in the high half, and writing the
+    /// low half sends the interrupt.
+    pub const LOW: usize = 0x300;
+    pub const HIGH: usize = 0x310;
+
+    pub const DELIVERY_NMI: u32 = 0b100 << 8;
+    pub const DELIVERY_INIT: u32 = 0b101 << 8;
+    pub const DELIVERY_STARTUP: u32 = 0b110 << 8;
+    /// Set by the hardware while an IPI is still being delivered.
+    pub const PENDING: u32 = 1 << 12;
+    pub const LEVEL_ASSERT: u32 = 1 << 14;
+    pub const TRIGGER_LEVEL: u32 = 1 << 15;
+    pub const SHORTHAND_ALL_BUT_SELF: u32 = 0b11 << 18;
+
+    /// INIT IPI (puts the target CPU into the wait-for-SIPI state).
+    pub const INIT: u32 = DELIVERY_INIT | LEVEL_ASSERT | TRIGGER_LEVEL;
+
+    /// STARTUP IPI: the target begins real-mode execution at physical
+    /// address `page * 0x1000` (so the code must sit below 1 MiB).
+    pub const fn startup(page: u8) -> u32 {
+        DELIVERY_STARTUP | LEVEL_ASSERT | page as u32
+    }
+
+    /// High half for a physical destination APIC id.
+    pub const fn destination(apic_id: u8) -> u32 {
+        (apic_id as u32) << 24
+    }
+
+    /// NMI to every CPU except the sender.
+    pub const NMI_ALL_BUT_SELF: u32 = DELIVERY_NMI | LEVEL_ASSERT | SHORTHAND_ALL_BUT_SELF;
+
+    /// Fixed-vector IPI to every CPU except the sender.
+    pub const fn fixed_all_but_self(vector: u8) -> u32 {
+        LEVEL_ASSERT | SHORTHAND_ALL_BUT_SELF | vector as u32
+    }
+}
+
 /// IO-APIC register selectors.
 pub mod ioapic {
     /// Index register offset and data window offset, from the IO-APIC base.
@@ -139,6 +178,15 @@ mod tests {
         assert_eq!(timer_initial_count(0, 20, 100), 1, "never zero");
         assert_eq!(timer_initial_count(u32::MAX, 1, 1), u32::MAX, "clamped, no overflow");
         assert_eq!(timer_initial_count(10, 0, 0), 10_000, "zero arguments don't divide by zero");
+    }
+
+    #[test]
+    fn ipi_encodings_match_the_intel_manual() {
+        assert_eq!(icr::INIT, 0xC500, "INIT, level, assert");
+        assert_eq!(icr::startup(0x08), 0x4608, "SIPI to page 8 = physical 0x8000");
+        assert_eq!(icr::destination(3), 0x0300_0000);
+        assert_eq!(icr::NMI_ALL_BUT_SELF, 0xC4400);
+        assert_eq!(icr::fixed_all_but_self(0xFD), 0xC40FD);
     }
 
     #[test]

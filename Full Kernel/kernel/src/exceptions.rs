@@ -132,6 +132,10 @@ extern "sysv64" fn nova_exception_handler(f: &mut ExceptionFrame) {
         crate::interrupts::dispatch(f.vector as u8);
         return;
     }
+    // Another CPU is dying and has told us to stop (see smp::halt_other_cpus).
+    if f.vector == nova_x86::exception::NMI as u64 && crate::smp::panicking() {
+        nova_x86::halt_forever();
+    }
     if f.vector == BREAKPOINT as u64 {
         BREAKPOINTS.fetch_add(1, Ordering::SeqCst);
         crate::kprintln!("#BP breakpoint at {:#x}: handled, continuing", f.rip);
@@ -141,6 +145,8 @@ extern "sysv64" fn nova_exception_handler(f: &mut ExceptionFrame) {
 }
 
 fn fatal(f: &ExceptionFrame) -> ! {
+    // Stop the other CPUs first so their output can't interleave with ours.
+    crate::smp::halt_other_cpus();
     // SAFETY: we never return; if the fault hit mid-log, the lock is stale.
     unsafe { log::force_unlock() };
     if FATAL_DEPTH.fetch_add(1, Ordering::SeqCst) > 0 {
@@ -157,6 +163,13 @@ fn fatal(f: &ExceptionFrame) -> ! {
     let (mnemonic, description) = exc::name(vector);
     let mut r = Report::new("NOVA KERNEL EXCEPTION");
     r.head(format_args!("{mnemonic} {description} (vector {vector})"));
+    let cpu = crate::cpu::this_cpu();
+    let (apic_id, tid) = (cpu.apic_id.load(core::sync::atomic::Ordering::Relaxed), cpu.current.load(core::sync::atomic::Ordering::Relaxed));
+    if tid == usize::MAX {
+        r.head(format_args!("on CPU {} (APIC id {apic_id}), before the scheduler started", cpu.id));
+    } else {
+        r.head(format_args!("on CPU {} (APIC id {apic_id}), thread {tid}", cpu.id));
+    }
 
     if exc::has_error_code(vector) {
         let mut why = crate::crash::TextBuf::<160>::new();

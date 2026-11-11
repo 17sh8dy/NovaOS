@@ -5,7 +5,7 @@
 //!
 //! | Vector | What |
 //! |---|---|
-//! | `0x20` | local APIC timer (100 Hz tick) |
+//! | `0x20` | local APIC timer (100 Hz tick, every CPU) |
 //! | `0x2C` | PS/2 mouse (ISA IRQ 12, via the IO-APIC) |
 //! | `0xFF` | APIC spurious interrupt (needs no EOI) |
 //! | anything else | stray: counted and logged, never silently ignored |
@@ -44,6 +44,11 @@ pub fn dispatch(vector: u8) {
         SPURIOUS.fetch_add(1, Ordering::Relaxed);
         return;
     }
+    // Acknowledge first: the timer handler may switch to another thread and
+    // not come back for a while, and an unacknowledged interrupt would block
+    // every later one of the same or lower priority on this CPU. Interrupts
+    // stay disabled inside the handler, so nothing can slip in meanwhile.
+    apic::eoi();
     let h = HANDLERS[vector as usize].load(Ordering::SeqCst);
     if h != 0 {
         // SAFETY: only `register` stores here, and only valid `fn()` addresses.
@@ -55,12 +60,16 @@ pub fn dispatch(vector: u8) {
             crate::kprintln!("irq: stray interrupt on vector {vector:#x} (no handler registered)");
         }
     }
-    apic::eoi();
 }
 
-/// The timer's handler.
+/// The timer's handler, run on every CPU. The boot CPU keeps the global
+/// clock and wakes sleepers; all CPUs then let the scheduler end time slices.
 pub fn timer_tick() {
-    TICKS.fetch_add(1, Ordering::Relaxed);
+    if crate::cpu::this_cpu().id == 0 {
+        let now = TICKS.fetch_add(1, Ordering::Relaxed) + 1;
+        crate::sched::wake_sleepers(now);
+    }
+    crate::sched::tick();
 }
 
 /// Timer ticks since the timer was started.

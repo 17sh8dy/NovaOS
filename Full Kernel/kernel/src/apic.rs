@@ -11,13 +11,15 @@ use crate::log::SpinLock;
 use crate::vm;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use nova_acpi::Madt;
-use nova_apic::{APIC_BASE_ENABLE, MSR_APIC_BASE, Redirection, TimerMode, ioapic, lapic};
+use nova_apic::{APIC_BASE_ENABLE, MSR_APIC_BASE, Redirection, TimerMode, icr, ioapic, lapic};
 use nova_x86::{inb, outb, rdmsr, wrmsr};
 
 /// Virtual address of the local APIC registers (0 until `init`).
 static LAPIC: AtomicU64 = AtomicU64::new(0);
 /// The boot CPU's APIC id.
 static BSP_ID: AtomicU32 = AtomicU32::new(0);
+/// The timer's initial count (measured on the boot CPU, reused by the others).
+static TIMER_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Clone, Copy)]
 struct IoApicHw {
@@ -122,6 +124,7 @@ pub unsafe fn init(madt: Madt) -> Result<Info, &'static str> {
     lapic_write(lapic::SPURIOUS, lapic::SPURIOUS_ENABLE | VECTOR_SPURIOUS as u32);
     let apic_id = lapic_read(lapic::ID) >> 24;
     BSP_ID.store(apic_id, Ordering::SeqCst);
+    crate::cpu::set_bsp_apic_id(apic_id);
 
     // IO-APICs: map each and mask every pin.
     let mut total_pins = 0;
@@ -199,8 +202,79 @@ pub fn start_timer() -> Result<u64, &'static str> {
     }
     interrupts::register(VECTOR_TIMER, interrupts::timer_tick);
     lapic_write(lapic::LVT_TIMER, nova_apic::lvt_timer(VECTOR_TIMER, TimerMode::Periodic, false));
-    lapic_write(lapic::TIMER_INITIAL, nova_apic::timer_initial_count(elapsed, WINDOW_MS, TICK_HZ));
+    let count = nova_apic::timer_initial_count(elapsed, WINDOW_MS, TICK_HZ);
+    TIMER_COUNT.store(count, Ordering::SeqCst);
+    lapic_write(lapic::TIMER_INITIAL, count);
     Ok(nova_apic::timer_clock_hz(elapsed, WINDOW_MS))
+}
+
+/// This CPU's local APIC id.
+pub fn this_apic_id() -> u32 {
+    lapic_read(lapic::ID) >> 24
+}
+
+/// The processors the firmware says exist.
+pub fn cpu_list() -> alloc::vec::Vec<nova_acpi::Cpu> {
+    MADT.with(|m| m.as_ref().map(|m| m.cpus.clone()).unwrap_or_default())
+}
+
+/// Brings up the local APIC on an application processor (the boot CPU's
+/// register mapping is shared: every CPU sees its own APIC at the same address).
+pub fn init_ap() {
+    // SAFETY: standard MSR on every CPU with an APIC.
+    unsafe {
+        let base = rdmsr(MSR_APIC_BASE);
+        if base & APIC_BASE_ENABLE == 0 {
+            wrmsr(MSR_APIC_BASE, base | APIC_BASE_ENABLE);
+        }
+    }
+    lapic_write(lapic::TPR, 0);
+    lapic_write(lapic::LVT_LINT0, lapic::LVT_MASKED);
+    lapic_write(lapic::LVT_ERROR, lapic::LVT_MASKED);
+    lapic_write(lapic::SPURIOUS, lapic::SPURIOUS_ENABLE | VECTOR_SPURIOUS as u32);
+}
+
+/// Starts this CPU's timer with the boot CPU's measured rate.
+pub fn start_timer_ap() {
+    lapic_write(lapic::TIMER_DIVIDE, lapic::DIVIDE_BY_16);
+    lapic_write(lapic::LVT_TIMER, nova_apic::lvt_timer(VECTOR_TIMER, TimerMode::Periodic, false));
+    lapic_write(lapic::TIMER_INITIAL, TIMER_COUNT.load(Ordering::SeqCst));
+}
+
+/// Sends an inter-processor interrupt. Returns false if the APIC never
+/// reported it delivered.
+fn send_ipi(dest_apic_id: u32, low: u32) -> bool {
+    let busy = || lapic_read(icr::LOW) & icr::PENDING != 0;
+    for _ in 0..1_000_000 {
+        if !busy() {
+            break;
+        }
+        core::hint::spin_loop();
+    }
+    lapic_write(icr::HIGH, icr::destination(dest_apic_id as u8));
+    lapic_write(icr::LOW, low); // writing the low half sends it
+    for _ in 0..1_000_000 {
+        if !busy() {
+            return true;
+        }
+        core::hint::spin_loop();
+    }
+    false
+}
+
+/// INIT: puts the target CPU into the wait-for-startup state.
+pub fn send_init(apic_id: u32) -> bool {
+    send_ipi(apic_id, icr::INIT)
+}
+
+/// STARTUP: the target begins real-mode execution at `page * 0x1000`.
+pub fn send_startup(apic_id: u32, page: u8) -> bool {
+    send_ipi(apic_id, icr::startup(page))
+}
+
+/// NMI to every other CPU (used to stop them when the kernel is dying).
+pub fn send_nmi_all_but_self() {
+    send_ipi(0, icr::NMI_ALL_BUT_SELF);
 }
 
 /// Routes legacy ISA IRQ `irq` to `vector` on the boot CPU, honouring the

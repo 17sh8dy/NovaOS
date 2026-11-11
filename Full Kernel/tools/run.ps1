@@ -8,8 +8,11 @@
 
 .PARAMETER Memory
   Guest RAM, e.g. 256M or 2G (default 256M).
+
+.PARAMETER Cpus
+  Virtual CPUs (default 4).
 #>
-param([switch]$NoBuild, [string]$Memory = '256M')
+param([switch]$NoBuild, [string]$Memory = '256M', [int]$Cpus = 4)
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -20,7 +23,7 @@ $py = @"
 import sys, json
 sys.path.insert(0, r'$PSScriptRoot')
 import qemu as q
-print(json.dumps(q.base_args(q.find_qemu(), '$Memory')))
+print(json.dumps(q.base_args(q.find_qemu(), '$Memory', $Cpus)))
 "@
 $qemuArgs = python -c $py | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { throw 'Could not prepare QEMU' }
