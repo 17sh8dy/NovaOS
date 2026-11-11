@@ -25,11 +25,19 @@ name = "nova-bootinfo"
 version = "0.1.0"
 
 [[package]]
+name = "nova-console"
+version = "0.1.0"
+
+[[package]]
 name = "nova-elf"
 version = "0.1.0"
 
 [[package]]
 name = "nova-heap"
+version = "0.1.0"
+
+[[package]]
+name = "nova-kbd"
 version = "0.1.0"
 
 [[package]]
@@ -39,7 +47,9 @@ dependencies = [
  "nova-acpi",
  "nova-apic",
  "nova-bootinfo",
+ "nova-console",
  "nova-heap",
+ "nova-kbd",
  "nova-paging",
  "nova-pmm",
  "nova-ps2",

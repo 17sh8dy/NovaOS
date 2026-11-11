@@ -9,7 +9,9 @@
 //! gone), bootloader memory is reclaimed, and `alloc` works (a kernel heap).
 //! Stage 5: ACPI, the local APIC + IO-APIC, a 100 Hz timer, interrupt-driven
 //! input and `hlt` idling. Also: a PS/2 mouse with an on-screen cursor.
-//! Next stages (keyboard + console, tasks, ...) are in docs/ROADMAP.md.
+//! Stage 7: kernel threads, a preemptive scheduler, SMP.
+//! Stage 6: PS/2 keyboard, a scrolling text console and a shell thread.
+//! Next: user space (docs/ROADMAP.md).
 
 #![no_std]
 #![no_main]
@@ -25,6 +27,7 @@ mod cursor;
 mod exceptions;
 mod faults;
 mod font;
+mod gui;
 mod heap;
 mod interrupts;
 mod log;
@@ -32,11 +35,12 @@ mod pmm;
 mod ps2;
 mod screen;
 mod sched;
+mod shell;
 mod smp;
 mod vm;
 
 use nova_bootinfo::{BootInfo, MemoryKind, total_of};
-use screen::{Rgb, Screen};
+use screen::Screen;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -202,15 +206,15 @@ fn kmain(boot_copy: &'static BootInfo) -> ! {
 
     // ---- Screen ----------------------------------------------------------
     let fb = info.framebuffer;
-    let mut screen = None;
+    let mut have_gui = false;
     if fb.is_present() {
         kprintln!("framebuffer: {}x{}, stride {}, at {:#x} (write-combining)", fb.width, fb.height, fb.stride, fb.addr);
         crash::set_framebuffer(fb, info.phys_to_virt(fb.addr));
         // SAFETY: the framebuffer is mapped by vm::init at its direct-map
-        // address and only the kernel draws to it.
-        let mut s = unsafe { Screen::new(fb, info.phys_to_virt(fb.addr)) };
-        draw_boot_screen(&mut s, info, free_mib);
-        screen = Some(s);
+        // address and only the kernel draws to it (through gui.rs from here on).
+        let s = unsafe { Screen::new(fb, info.phys_to_virt(fb.addr)) };
+        gui::init(s, info, free_mib, 1);
+        have_gui = true;
     } else {
         kprintln!("framebuffer: none");
     }
@@ -221,21 +225,36 @@ fn kmain(boot_copy: &'static BootInfo) -> ! {
     // ---- Stage 5: interrupts -----------------------------------------------
     let irq_mode = start_interrupts();
 
-    // ---- Mouse ------------------------------------------------------------
+    // ---- Keyboard + mouse ---------------------------------------------------
     // SAFETY: the kernel owns the PS/2 controller.
-    let mouse = match unsafe { ps2::init(irq_mode) } {
-        Ok(m) => {
-            kprintln!(
-                "mouse: PS/2 mouse ready (device id {}{}), {}",
-                m.id,
-                if m.id == 3 || m.id == 4 { ", scroll wheel" } else { "" },
-                if irq_mode { "interrupt driven (IRQ 12)" } else { "polled" }
-            );
-            true
+    let (mouse, keyboard) = match unsafe { ps2::init(irq_mode) } {
+        Ok(d) => {
+            let how = if irq_mode { "interrupt driven" } else { "polled" };
+            let mouse = match d.mouse {
+                Ok(m) => {
+                    kprintln!("mouse: PS/2 mouse ready (device id {}{}), {how}", m.id, if m.id == 3 || m.id == 4 { ", scroll wheel" } else { "" });
+                    true
+                }
+                Err(e) => {
+                    kprintln!("mouse: unavailable: {e}");
+                    false
+                }
+            };
+            let keyboard = match d.keyboard {
+                Ok(()) => {
+                    kprintln!("keyboard: PS/2 keyboard ready (scancode set 1 via controller translation), {how}");
+                    true
+                }
+                Err(e) => {
+                    kprintln!("keyboard: unavailable: {e}");
+                    false
+                }
+            };
+            (mouse, keyboard)
         }
         Err(e) => {
-            kprintln!("mouse: unavailable: {e}");
-            false
+            kprintln!("ps/2: unavailable: {e}");
+            (false, false)
         }
     };
 
@@ -252,12 +271,25 @@ fn kmain(boot_copy: &'static BootInfo) -> ! {
         start_other_cpus();
         run_scheduler_tests();
         faults::run_late_if_requested();
+        if have_gui {
+            gui::set_cpus(cpu::online_count());
+            if keyboard {
+                if sched::spawn("shell", shell::run).is_none() {
+                    kprintln!("shell: could not start");
+                }
+            } else {
+                kprintln!("shell: no keyboard, not started");
+            }
+        }
+    } else if keyboard {
+        kprintln!("shell: needs interrupts and the scheduler; not started in polled mode");
     }
 
     kprintln!("{READY_MARKER}");
-    match screen {
-        Some(s) if mouse => desktop(s, irq_mode),
-        _ => nova_x86::halt_forever(),
+    if have_gui && (mouse || keyboard) {
+        desktop(irq_mode)
+    } else {
+        nova_x86::halt_forever()
     }
 }
 
@@ -319,11 +351,14 @@ fn start_interrupts() -> bool {
         }
     }
     interrupts::register(interrupts::VECTOR_MOUSE, ps2::irq_handler);
-    match apic::route_isa_irq(12, interrupts::VECTOR_MOUSE) {
-        Ok(gsi) => kprintln!("irq: ISA IRQ 12 (mouse) -> GSI {gsi} -> vector {:#x}", interrupts::VECTOR_MOUSE),
-        Err(e) => {
-            kprintln!("irq: cannot route the mouse interrupt: {e}; staying polled");
-            return false;
+    interrupts::register(interrupts::VECTOR_KEYBOARD, ps2::irq_handler);
+    for (irq, vector, name) in [(12u8, interrupts::VECTOR_MOUSE, "mouse"), (1, interrupts::VECTOR_KEYBOARD, "keyboard")] {
+        match apic::route_isa_irq(irq, vector) {
+            Ok(gsi) => kprintln!("irq: ISA IRQ {irq} ({name}) -> GSI {gsi} -> vector {vector:#x}"),
+            Err(e) => {
+                kprintln!("irq: cannot route the {name} interrupt: {e}; staying polled");
+                return false;
+            }
         }
     }
     true
@@ -389,91 +424,54 @@ fn pmm_self_test(when: &str) {
     }
 }
 
-fn draw_boot_screen(s: &mut Screen, info: &BootInfo, free_mib: u64) {
-    let ink = Rgb(0xE8, 0xEC, 0xFF);
-    let dim = Rgb(0x8C, 0x94, 0xC0);
-    let accent = Rgb(0x6E, 0xE7, 0xD8);
-    s.gradient(Rgb(0x07, 0x09, 0x1C), Rgb(0x1B, 0x10, 0x3A));
+/// What the main thread does once the kernel is up: follow the mouse, keep
+/// the clock and the text cursor going. With interrupts the CPU sleeps
+/// (`hlt`) between events; without them it falls back to polling. (Typing is
+/// handled by the shell thread.)
+fn desktop(irq_mode: bool) -> ! {
+    use nova_ps2::Buttons;
 
-    let cx = s.width() / 2;
-    let unit = (s.height() / 400).max(1); // 2 at 800 px tall
-    let mut y = s.height() / 6;
-
-    let star = 30 * unit;
-    s.star(cx, y + star, star, accent);
-    y += 2 * star + 16 * unit;
-
-    s.text_centered(y, 6 * unit, ink, "NOVA OS");
-    y += font::HEIGHT * 6 * unit + 6 * unit;
-    s.text_centered(y, 2 * unit, dim, "FULL KERNEL - STAGE 5: INTERRUPTS + TIMER");
-    y += font::HEIGHT * 2 * unit + 14 * unit;
-
-    let lines = [
-        fmt_line!("BOOTED BY NOVABOOT (UEFI)  -  KERNEL {VERSION}"),
-        fmt_line!("SCREEN {} X {}", info.framebuffer.width, info.framebuffer.height),
-        fmt_line!("MEMORY {} MIB FREE  -  OWN PAGE TABLES", free_mib),
-        fmt_line!("KERNEL AT {:#X}", info.kernel_virt),
-        fmt_line!("OWN GDT + IDT  -  HEAP  -  APIC  -  MOUSE"),
-    ];
-    for l in &lines {
-        s.text_centered(y, 2 * unit, ink, l.as_str());
-        y += font::HEIGHT * 2 * unit + 5 * unit;
-    }
-    y += 8 * unit;
-    s.text_centered(y, 2 * unit, accent, "KERNEL READY");
-}
-
-/// What the kernel does for now once it is up: show a mouse pointer, follow
-/// the mouse, and show the uptime. With interrupts the CPU sleeps (`hlt`)
-/// between events; without them it falls back to polling.
-fn desktop(mut s: Screen, irq_mode: bool) -> ! {
-    use nova_ps2::{Buttons, Pointer};
-
-    let mut ptr = Pointer::centered(s.width(), s.height());
-    let mut cursor = cursor::Cursor::new(s.height());
     let mut moved_once = false;
-    let mut last_secs = 0;
+    let mut last_secs = u64::MAX;
+    let mut last_blink = 0;
     let mut wakeups: u64 = 0;
     let mut idle_reported = false;
-    draw_status(&mut s, &ptr, 0);
-    cursor.show(&mut s, ptr.x as usize, ptr.y as usize);
 
     loop {
         if !irq_mode {
             ps2::pump();
         }
-        let mut redraw = false;
         while let Some(ev) = ps2::pop() {
-            let change = ptr.apply(ev);
+            let Some((change, x, y)) = gui::mouse(ev) else { continue };
             if change.is_empty() {
                 continue;
             }
-            redraw = true;
             if change.moved && !moved_once {
                 moved_once = true;
-                kprintln!("mouse: first movement, pointer at ({}, {})", ptr.x, ptr.y);
+                kprintln!("mouse: first movement, pointer at ({x}, {y})");
             }
             for (bit, name) in [(Buttons::LEFT, "left"), (Buttons::RIGHT, "right"), (Buttons::MIDDLE, "middle")] {
                 if change.pressed.0 & bit != 0 {
-                    kprintln!("mouse: {name} button down at ({}, {})", ptr.x, ptr.y);
+                    kprintln!("mouse: {name} button down at ({x}, {y})");
                 }
                 if change.released.0 & bit != 0 {
-                    kprintln!("mouse: {name} button up at ({}, {})", ptr.x, ptr.y);
+                    kprintln!("mouse: {name} button up at ({x}, {y})");
                 }
             }
             if change.wheel != 0 {
                 kprintln!("mouse: wheel {}", change.wheel);
             }
         }
-        let secs = interrupts::ticks() / interrupts::TICK_HZ as u64;
+        let ticks = interrupts::ticks();
+        let secs = ticks / interrupts::TICK_HZ as u64;
         if secs != last_secs {
             last_secs = secs;
-            redraw = true;
+            gui::set_uptime(secs);
         }
-        if redraw {
-            cursor.hide(&mut s);
-            draw_status(&mut s, &ptr, secs);
-            cursor.show(&mut s, ptr.x as usize, ptr.y as usize);
+        // The text cursor blinks twice a second.
+        if ticks / (interrupts::TICK_HZ as u64 / 2) != last_blink {
+            last_blink = ticks / (interrupts::TICK_HZ as u64 / 2);
+            gui::blink();
         }
         // Proof that the CPU really sleeps: a busy loop would have spun
         // millions of times by now, an idle one wakes about once per tick.
@@ -498,25 +496,6 @@ fn desktop(mut s: Screen, irq_mode: bool) -> ! {
             core::hint::spin_loop();
         }
     }
-}
-
-/// The little pointer read-out in the bottom-left corner.
-fn draw_status(s: &mut Screen, ptr: &nova_ps2::Pointer, uptime_secs: u64) {
-    let unit = (s.height() / 400).max(1);
-    let (w, h) = (330 * unit, 22 * unit);
-    let (x, y) = (12 * unit, s.height().saturating_sub(h + 12 * unit));
-    s.fill_rect(x, y, w, h, Rgb(0x10, 0x14, 0x30));
-    let on = |down: bool, c: &'static str| if down { c } else { "-" };
-    let line = fmt_line!(
-        "MOUSE {:>4},{:>4} {}{}{}  UP {}S",
-        ptr.x,
-        ptr.y,
-        on(ptr.buttons.left(), "L"),
-        on(ptr.buttons.right(), "R"),
-        on(ptr.buttons.middle(), "M"),
-        uptime_secs
-    );
-    s.text(x + 6 * unit, y + 6 * unit, unit, Rgb(0x6E, 0xE7, 0xD8), line.as_str());
 }
 
 static PANICKING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);

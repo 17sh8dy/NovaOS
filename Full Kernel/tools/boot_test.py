@@ -153,6 +153,86 @@ def mouse_test(qmp, serial, start=(640, 400), move=(100, 50)) -> str | None:
     return None
 
 
+QCODES = {" ": "spc", "\n": "ret", "-": "minus", ".": "dot", "/": "slash", "\b": "backspace"}
+
+
+def press(qmp, qcode, shift=False):
+    """One key press + release through QEMU's input layer (the guest sees real PS/2 scancodes)."""
+    events = []
+    if shift:
+        events.append({"type": "key", "data": {"down": True, "key": {"type": "qcode", "data": "shift"}}})
+    events.append({"type": "key", "data": {"down": True, "key": {"type": "qcode", "data": qcode}}})
+    events.append({"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": qcode}}})
+    if shift:
+        events.append({"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": "shift"}}})
+    qmp.cmd("input-send-event", events=events)
+    time.sleep(0.04)
+
+
+def type_text(qmp, text):
+    for ch in text:
+        if ch in QCODES:
+            press(qmp, QCODES[ch])
+        elif ch.isupper():
+            press(qmp, ch.lower(), shift=True)
+        else:
+            press(qmp, ch)
+
+
+def shell_test(qmp, serial, cpus) -> str | None:
+    """Types into the guest's shell through the emulated keyboard and checks
+    what the console printed (every console line is mirrored to the serial log)."""
+
+    def wait_for(pattern, seconds=10):
+        end = time.time() + seconds
+        while time.time() < end:
+            m = re.search(pattern, read_log(serial))
+            if m:
+                return m
+            time.sleep(0.1)
+        return None
+
+    if not wait_for(r"shell: ready"):
+        return "the shell never started"
+    steps = [
+        ("echo Hello Nova\n", r"con: Hello Nova"),
+        ("echoo\b x\n", r"con: x\n"),                      # backspace edits the line
+        ("uptime\n", r"con: up \d+\.\d\d s"),
+        ("mem\n", r"con: heap: +\d+ KiB mapped"),
+        ("cpus\n", rf"con: {cpus} CPU\(s\) online"),
+        ("sleep 100\n", r"con: slept 100 ms"),
+        ("nope\n", r"con: unknown command 'nope'"),
+    ]
+    for keys, expect in steps:
+        type_text(qmp, keys)
+        if not wait_for(expect):
+            return f"after typing {keys!r} expected {expect!r}"
+    # History: Up recalls the last command, Enter runs it again.
+    before = len(re.findall(r"unknown command 'nope'", read_log(serial)))
+    press(qmp, "up")
+    press(qmp, "ret")
+    end = time.time() + 10
+    while time.time() < end and len(re.findall(r"unknown command 'nope'", read_log(serial))) == before:
+        time.sleep(0.1)
+    if len(re.findall(r"unknown command 'nope'", read_log(serial))) == before:
+        return "Up + Enter did not re-run the previous command (history)"
+    # Ctrl+C abandons a line.
+    type_text(qmp, "abandoned")
+    qmp.cmd("input-send-event", events=[
+        {"type": "key", "data": {"down": True, "key": {"type": "qcode", "data": "ctrl"}}},
+        {"type": "key", "data": {"down": True, "key": {"type": "qcode", "data": "c"}}},
+        {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": "c"}}},
+        {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": "ctrl"}}},
+    ])
+    time.sleep(0.3)
+    type_text(qmp, "echo after cancel\n")
+    if not wait_for(r"con: after cancel"):
+        return "the shell did not recover after Ctrl+C"
+    if "abandoned" in "".join(re.findall(r"con: (?:nova> )?.*", read_log(serial))).replace("^C", ""):
+        return "a cancelled line was still run"
+    return None
+
+
 def main() -> int:
     import argparse
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -162,6 +242,7 @@ def main() -> int:
                          "full boot (repeatable)")
     ap.add_argument("--cpus", type=int, default=None, help="virtual CPUs (default 4, or NOVA_CPUS)")
     ap.add_argument("--shot", default="boot_test", help="screenshot name (build/<name>.png)")
+    ap.add_argument("--shell", action="store_true", help="after boot, type commands into the shell through QEMU's keyboard")
     ap.add_argument("--mouse", action="store_true",
                     help="after boot, move the mouse and click through QEMU and check the kernel saw it")
     opts = ap.parse_args()
@@ -208,6 +289,14 @@ def main() -> int:
                 reason = "mouse test: " + problem
             else:
                 print("Mouse: moved, left-clicked and right-clicked; the kernel saw all of it")
+
+        if ok and opts.shell and not opts.expect:
+            problem = shell_test(qmp, serial, opts.cpus or q.default_cpus())
+            if problem:
+                ok = False
+                reason = "shell test: " + problem
+            else:
+                print("Shell: typed commands, edited with backspace, used history and Ctrl+C; every reply was correct")
 
         if proc.poll() is None:
             time.sleep(0.5)  # let the last frame land

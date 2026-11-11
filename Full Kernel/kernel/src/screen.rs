@@ -12,6 +12,10 @@ pub struct Screen {
     fb: Framebuffer,
 }
 
+// SAFETY: the pointer is the framebuffer's kernel mapping, valid on every CPU; users
+// serialise their drawing themselves (the GUI keeps its Screen behind a lock).
+unsafe impl Send for Screen {}
+
 impl Screen {
     /// # Safety
     /// `virt` must be the framebuffer's mapped virtual address and nothing
@@ -52,6 +56,23 @@ impl Screen {
         if x < self.width() && y < self.height() {
             // SAFETY: (x, y) is inside the framebuffer (checked above).
             unsafe { self.base.add(y * self.fb.stride as usize + x).write_volatile(px) };
+        }
+    }
+
+    /// Draws one character in a (WIDTH+1) x (HEIGHT+2) cell at pixel (x, y), both
+    /// colours given as packed pixels (see [`Screen::pack`]); `scale` enlarges it.
+    pub fn draw_cell(&mut self, x: usize, y: usize, scale: usize, fg: u32, bg: u32, ch: char) {
+        let glyph = font::glyph9(ch);
+        for (gy, &bits) in glyph.iter().enumerate() {
+            for gx in 0..font::WIDTH + 1 {
+                let on = gx < font::WIDTH && bits & (0x10 >> gx) != 0;
+                let px = if on { fg } else { bg };
+                for sy in 0..scale {
+                    for sx in 0..scale {
+                        self.put_raw(x + gx * scale + sx, y + gy * scale + sy, px);
+                    }
+                }
+            }
         }
     }
 

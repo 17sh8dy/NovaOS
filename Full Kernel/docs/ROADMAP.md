@@ -9,7 +9,7 @@ Each stage ends with something that boots and is checked by `tools\test.ps1`.
 | 3 | Physical memory manager ✅ | Frame allocator over `Usable` (then reclaimed) regions; unit-tested on the host like `crates/paging` |
 | 4 | Kernel virtual memory + heap ✅ (+ PS/2 mouse, pulled forward) | Kernel-owned page tables (drop the identity map), `alloc` support (Box, Vec) |
 | 5 | Interrupts + time ✅ | ACPI (MADT) parsing, Local APIC + IOAPIC, timer tick, `hlt`-based idle |
-| 6 | Keyboard + console | PS/2 keyboard (USB later), a scrolling text console on the framebuffer |
+| 6 | Keyboard + console ✅ | PS/2 keyboard (USB later), a scrolling text console on the framebuffer |
 | 7 | Tasks ✅ | Kernel threads and a scheduler; then SMP (start the other cores) |
 | 8 | User space | Ring 3, system calls, ELF programs loaded from disk |
 | 9 | Storage + files | AHCI/NVMe driver, a filesystem, a VFS |
@@ -92,7 +92,27 @@ Later: USB (xHCI), networking, GPU, real-hardware testing on a USB stick.
   tables outside the direct map are reported as unreadable rather than mapped on demand; MSI/PCI
   interrupts and a real keyboard IRQ come with their drivers.
 
-## Stage 7 notes (done before stage 6: keyboard + console is still to do)
+## Stage 6 notes
+
+* `crates/kbd`: scancode set 1 decoder (E0 prefix, Pause, fake-shift bytes), US layout, shift / caps /
+  ctrl / alt / num lock tracking, keypad; 12 host tests. `crates/console`: character grid (wrap,
+  scroll, tab, backspace, per-row dirty tracking) and a line editor (cursor editing, kill line/word,
+  history with draft); 15 host tests.
+* `kernel/src/ps2.rs` now drives both devices: the controller's translation bit gives set 1; IRQ 1 and
+  IRQ 12 share one handler that drains the single output buffer and routes bytes by the status bit.
+  Each device is optional (a PC may have only one).
+* `kernel/src/gui.rs`: compact splash + console panel + status bar + mouse pointer behind one lock;
+  only changed console rows are repainted. `font.rs` got lowercase and the missing punctuation.
+* `kernel/src/shell.rs`: the shell is a kernel thread that `park`s until the keyboard interrupt
+  `unpark`s it (new in `sched.rs`; no lost wake-ups). Commands: help clear echo uptime mem cpus
+  threads sleep version panic reboot halt. Every console line is mirrored to serial as `con: ...`.
+* `tools/boot_test.py --shell` types through QEMU's keyboard (real PS/2 scancodes) and checks the
+  replies, backspace editing, history (Up) and Ctrl+C.
+* Gaps: US layout only, no key repeat control or LEDs, no scrollback (output that scrolls off is gone),
+  single-row line editing, no clipboard/selection, USB keyboards need xHCI (later), the shell runs
+  built-ins only (stage 8 adds programs).
+
+## Stage 7 notes
 
 * `kernel/src/sched.rs`: kernel threads (`spawn`, `join`, `yield_now`, `sleep_ms`, `exit`), each with a
   32 KiB stack and an unmapped guard page; preemptive round-robin from one ready queue, one tick

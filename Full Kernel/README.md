@@ -45,6 +45,9 @@ mouse by interrupt, and idles with `hlt` instead of spinning. The pointer read-o
 guard-paged stacks, a preemptive scheduler, and all CPUs started (4 in the default QEMU setup, see
 `run.ps1 -Cpus`). A crash report says which CPU and thread it happened on.
 
+**Stage 6: keyboard + console — done.** Boot in QEMU and type: a shell (`help`) runs in a kernel
+thread on a scrolling text console, with line editing and history.
+
 Next stages are in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Layout
@@ -60,6 +63,8 @@ Next stages are in [docs/ROADMAP.md](docs/ROADMAP.md).
 | `crates/heap` | Kernel heap allocator (free list + coalescing) |
 | `crates/acpi` | ACPI table parser (RSDP, XSDT/RSDT, MADT) |
 | `crates/apic` | Local APIC / IO-APIC register encodings, timer maths |
+| `crates/kbd` | Keyboard scancode decoding, US layout, modifiers |
+| `crates/console` | Text grid (scrolling, dirty rows) + line editor |
 | `crates/ps2` | PS/2 mouse packet decoder + pointer tracking |
 | `crates/x86` | Port I/O, serial (16550), MSRs, CPUID, GDT/TSS/IDT data, exception decoding |
 | `tools/` | Build, run and test scripts |

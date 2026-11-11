@@ -51,6 +51,8 @@ enum State {
     Ready,
     Running,
     Sleeping,
+    /// Waiting for `unpark` (see [`park`]).
+    Blocked,
     Dead,
 }
 
@@ -75,6 +77,10 @@ struct Thread {
     wake_tick: u64,
     stack: Option<Stack>,
     done: Arc<AtomicBool>,
+    /// `unpark` arrived before the thread had finished parking (or while it was running).
+    wake_pending: bool,
+    /// A Blocked thread that has been switched away from completely (safe to wake).
+    parked: bool,
 }
 
 struct Sched {
@@ -225,6 +231,16 @@ fn finish_switch() {
             }
             s.free_ids.push(prev);
         }
+        State::Blocked => {
+            let t = s.thread(prev);
+            if t.wake_pending {
+                t.wake_pending = false;
+                t.state = State::Ready;
+                s.ready.push_back(prev);
+            } else {
+                t.parked = true;
+            }
+        }
         State::Running => {}
     });
 }
@@ -284,6 +300,8 @@ pub fn init() {
             wake_tick: 0,
             stack: None,
             done: Arc::new(AtomicBool::new(false)),
+            wake_pending: false,
+            parked: false,
         });
         create(s, "idle/0", true, Box::new(idle_loop)).expect("no memory for the boot CPU's idle thread").0
     });
@@ -305,6 +323,8 @@ pub fn init_ap() {
             wake_tick: 0,
             stack: None,
             done: Arc::new(AtomicBool::new(false)),
+            wake_pending: false,
+            parked: false,
         })
     });
     cpu.current.store(id, Ordering::SeqCst);
@@ -323,6 +343,8 @@ fn create(s: &mut Sched, name: &str, idle: bool, f: Box<dyn FnOnce() + Send>) ->
         wake_tick: 0,
         stack: Some(stack),
         done: done.clone(),
+        wake_pending: false,
+        parked: false,
     });
     if !idle {
         s.ready.push_back(id);
@@ -384,6 +406,48 @@ pub fn sleep_ms(ms: u64) {
     if were_on {
         nova_x86::sti();
     }
+}
+
+/// Blocks the calling thread until another thread (or an interrupt handler)
+/// calls [`unpark`] for it. A wake-up that arrived earlier is not lost: the
+/// call then returns at once. Wake-ups can also be spurious, so callers
+/// re-check their condition in a loop.
+pub fn park() {
+    let were_on = nova_x86::interrupts_enabled();
+    nova_x86::cli();
+    let cpu = cpu::this_cpu();
+    let block = SCHED.with(|s| {
+        let t = s.thread(cpu.current.load(Ordering::SeqCst));
+        if t.wake_pending {
+            t.wake_pending = false;
+            false
+        } else {
+            t.state = State::Blocked;
+            t.parked = false;
+            true
+        }
+    });
+    if block {
+        schedule();
+    }
+    if were_on {
+        nova_x86::sti();
+    }
+}
+
+/// Wakes thread `id` if it is parked, or makes its next [`park`] return at
+/// once. Safe to call from interrupt handlers.
+pub fn unpark(id: usize) {
+    SCHED.with(|s| {
+        let Some(Some(t)) = s.threads.get_mut(id) else { return };
+        if t.state == State::Blocked && t.parked {
+            t.state = State::Ready;
+            t.parked = false;
+            s.ready.push_back(id);
+        } else {
+            t.wake_pending = true;
+        }
+    });
 }
 
 /// Ends the calling thread.

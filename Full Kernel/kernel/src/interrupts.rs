@@ -6,6 +6,7 @@
 //! | Vector | What |
 //! |---|---|
 //! | `0x20` | local APIC timer (100 Hz tick, every CPU) |
+//! | `0x21` | PS/2 keyboard (ISA IRQ 1, via the IO-APIC) |
 //! | `0x2C` | PS/2 mouse (ISA IRQ 12, via the IO-APIC) |
 //! | `0xFF` | APIC spurious interrupt (needs no EOI) |
 //! | anything else | stray: counted and logged, never silently ignored |
@@ -14,6 +15,7 @@ use crate::apic;
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 pub const VECTOR_TIMER: u8 = 0x20;
+pub const VECTOR_KEYBOARD: u8 = 0x21;
 pub const VECTOR_MOUSE: u8 = 0x2C;
 pub const VECTOR_SPURIOUS: u8 = 0xFF;
 

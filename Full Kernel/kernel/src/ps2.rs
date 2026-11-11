@@ -1,16 +1,17 @@
-//! The PS/2 controller (i8042) and the mouse on its second port.
+//! The PS/2 controller (i8042): the keyboard on its first port, the mouse on
+//! its second.
 //!
-//! Normally interrupt driven: the mouse raises ISA IRQ 12, the handler drains
-//! the controller into a small event queue, and the main loop sleeps (`hlt`)
-//! until something arrives. If the machine has no APIC the same code can be
-//! polled with [`pump`]. The keyboard port is left disabled until the
-//! keyboard driver exists (stage 6), so the only bytes that show up are mouse
-//! bytes.
+//! Normally interrupt driven: the keyboard raises ISA IRQ 1 and the mouse IRQ
+//! 12; either handler drains the controller (one output buffer, shared by
+//! both devices, flagged by a status bit) into small event queues. If the
+//! machine has no APIC the same code can be polled with [`pump`].
 //!
-//! Packet decoding and pointer tracking are in `crates/ps2` (host-tested);
-//! this file is the part that talks to the hardware.
+//! Scancode decoding/layout (`crates/kbd`) and mouse packet decoding
+//! (`crates/ps2`) are host-tested; this file talks to the hardware.
 
 use crate::log::SpinLock;
+use core::sync::atomic::{AtomicUsize, Ordering};
+use nova_kbd::Input;
 use nova_ps2::{Decoder, MouseEvent};
 use nova_x86::{inb, outb};
 
@@ -28,13 +29,16 @@ const CMD_ENABLE_MOUSE_PORT: u8 = 0xA8;
 const CMD_TEST_MOUSE_PORT: u8 = 0xA9;
 const CMD_SELF_TEST: u8 = 0xAA;
 const CMD_DISABLE_KBD_PORT: u8 = 0xAD;
+const CMD_ENABLE_KBD_PORT: u8 = 0xAE;
 const CMD_TO_MOUSE: u8 = 0xD4;
+/// Pulses the CPU reset line (the classic way to reboot a PC).
+const CMD_RESET_CPU: u8 = 0xFE;
 
 const ACK: u8 = 0xFA;
 const RESEND: u8 = 0xFE;
 
-/// Config byte bits we clear: IRQ1, IRQ12 (we poll), both port clock-disables,
-/// and scancode translation.
+/// Config byte bits we clear: IRQ1, IRQ12, both port clock-disables, and
+/// scancode translation.
 const CONFIG_CLEAR: u8 = (1 << 0) | (1 << 1) | (1 << 4) | (1 << 5) | (1 << 6);
 
 /// Status polls to wait for the controller before giving up (a missing
@@ -76,12 +80,69 @@ impl Queue {
     }
 }
 
-/// Reads what the mouse has sent into the event queue.
-pub fn pump() {
-    poll(|ev| QUEUE.with(|q| q.push(ev)));
+/// Typed input waiting for the shell (oldest first; the oldest are dropped
+/// if it falls behind).
+struct KeyQueue {
+    buf: [Option<Input>; 64],
+    head: usize,
+    len: usize,
 }
 
-/// The IRQ 12 handler.
+static KEYS: SpinLock<KeyQueue> = SpinLock::new(KeyQueue { buf: [None; 64], head: 0, len: 0 });
+static KBD: SpinLock<nova_kbd::Pipeline> = SpinLock::new(nova_kbd::Pipeline::new());
+/// Thread to wake when typed input arrives (usize::MAX = none).
+static KEY_WAITER: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+/// Registers the thread that is woken (`sched::unpark`) whenever a key is typed.
+pub fn set_key_waiter(thread: usize) {
+    KEY_WAITER.store(thread, Ordering::SeqCst);
+}
+
+/// The oldest typed input, if any.
+pub fn pop_key() -> Option<Input> {
+    KEYS.with(|k| {
+        if k.len == 0 {
+            return None;
+        }
+        let v = k.buf[k.head].take();
+        k.head = (k.head + 1) % k.buf.len();
+        k.len -= 1;
+        v
+    })
+}
+
+fn push_key(input: Input) {
+    KEYS.with(|k| {
+        let cap = k.buf.len();
+        if k.len == cap {
+            k.head = (k.head + 1) % cap;
+            k.len -= 1;
+        }
+        let at = (k.head + k.len) % cap;
+        k.buf[at] = Some(input);
+        k.len += 1;
+    });
+}
+
+/// Reads whatever the keyboard and mouse have sent into their queues.
+pub fn pump() {
+    let mut typed = false;
+    drain(
+        |ev| QUEUE.with(|q| q.push(ev)),
+        |input| {
+            push_key(input);
+            typed = true;
+        },
+    );
+    if typed {
+        let w = KEY_WAITER.load(Ordering::SeqCst);
+        if w != usize::MAX {
+            crate::sched::unpark(w);
+        }
+    }
+}
+
+/// The IRQ 1 / IRQ 12 handler.
 pub fn irq_handler() {
     pump();
 }
@@ -98,6 +159,12 @@ pub fn has_events() -> bool {
 pub struct MouseInfo {
     /// Device ID: 0 = plain mouse, 3 = wheel, 4 = wheel + 5 buttons.
     pub id: u8,
+}
+
+/// What [`init`] found. Each device is independent: a PC may have only one.
+pub struct Devices {
+    pub mouse: Result<MouseInfo, &'static str>,
+    pub keyboard: Result<(), &'static str>,
 }
 
 fn wait_input_ready() -> bool {
@@ -180,33 +247,27 @@ fn mouse_cmd_arg(cmd: u8, arg: u8) -> Result<(), &'static str> {
     mouse_cmd(arg)
 }
 
-/// Initialises the controller and the mouse and starts mouse reporting.
-/// With `irq` the controller is also told to raise IRQ 12 (the caller must
-/// already have routed and registered it); otherwise use [`pump`].
-///
-/// # Safety
-/// Call once; the kernel must own the PS/2 controller (I/O ports 0x60/0x64).
-pub unsafe fn init(irq: bool) -> Result<MouseInfo, &'static str> {
-    // Quiet both ports while we configure the controller.
-    command(CMD_DISABLE_KBD_PORT)?;
-    command(CMD_DISABLE_MOUSE_PORT)?;
-    flush();
-
-    // No interrupts (we poll), no scancode translation, both clocks running.
-    let cfg = read_config()? & !CONFIG_CLEAR;
-    write_config(cfg)?;
-
-    // Controller self-test. Some controllers reset their configuration here,
-    // so the configuration is written again afterwards.
-    command(CMD_SELF_TEST)?;
-    match read_data() {
-        Some(0x55) => {}
-        Some(_) => return Err("PS/2 controller failed its self-test"),
-        None => return Err("no PS/2 controller answered (this PC may be USB-only)"),
+/// Resets the keyboard and starts it scanning. The controller translates the
+/// keyboard's native scancodes to set 1 (config bit 6), which is what
+/// `crates/kbd` decodes.
+fn init_keyboard() -> Result<(), &'static str> {
+    command(CMD_ENABLE_KBD_PORT)?;
+    write_data(0xFF)?; // reset
+    if read_data() != Some(ACK) {
+        return Err("the keyboard did not acknowledge reset (no keyboard attached?)");
     }
-    write_config(cfg)?;
+    if read_data() != Some(0xAA) {
+        return Err("the keyboard failed its self-test");
+    }
+    write_data(0xF4)?; // enable scanning
+    if read_data() != Some(ACK) {
+        return Err("the keyboard did not acknowledge enable-scanning");
+    }
+    Ok(())
+}
 
-    // Is there a second (mouse) port at all?
+/// Resets the mouse and starts it reporting.
+fn init_mouse() -> Result<MouseInfo, &'static str> {
     command(CMD_ENABLE_MOUSE_PORT)?;
     if read_config()? & (1 << 5) != 0 {
         return Err("this controller has no mouse port");
@@ -238,16 +299,58 @@ pub unsafe fn init(irq: bool) -> Result<MouseInfo, &'static str> {
 
     mouse_cmd_arg(0xF3, 100)?; // 100 reports per second
     mouse_cmd(0xF4)?; // start reporting
-    flush();
-    if irq {
-        write_config(cfg | (1 << 1))?; // let the controller raise IRQ 12
-    }
     Ok(MouseInfo { id })
 }
 
-/// Reads whatever the mouse has sent and calls `f` with each complete event.
-/// Returns immediately if there is nothing to read.
-pub fn poll(mut f: impl FnMut(MouseEvent)) {
+/// Initialises the controller, then the keyboard and the mouse.
+/// With `irq` the controller is also told to raise IRQ 1 / IRQ 12 (the caller
+/// must already have routed and registered them); otherwise use [`pump`].
+///
+/// # Safety
+/// Call once; the kernel must own the PS/2 controller (I/O ports 0x60/0x64).
+pub unsafe fn init(irq: bool) -> Result<Devices, &'static str> {
+    // Quiet both ports while we configure the controller.
+    command(CMD_DISABLE_KBD_PORT)?;
+    command(CMD_DISABLE_MOUSE_PORT)?;
+    flush();
+
+    // No interrupts yet, both clocks running; scancode translation ON (set 1).
+    let cfg = (read_config()? & !CONFIG_CLEAR) | (1 << 6);
+    write_config(cfg)?;
+
+    // Controller self-test. Some controllers reset their configuration here,
+    // so the configuration is written again afterwards.
+    command(CMD_SELF_TEST)?;
+    match read_data() {
+        Some(0x55) => {}
+        Some(_) => return Err("PS/2 controller failed its self-test"),
+        None => return Err("no PS/2 controller answered (this PC may be USB-only)"),
+    }
+    write_config(cfg)?;
+
+    let keyboard = init_keyboard();
+    let mouse = init_mouse();
+    flush();
+    // Turn on the interrupts of the devices that came up.
+    let mut final_cfg = cfg;
+    if irq && keyboard.is_ok() {
+        final_cfg |= 1 << 0;
+    }
+    if irq && mouse.is_ok() {
+        final_cfg |= 1 << 1;
+    }
+    write_config(final_cfg)?;
+    Ok(Devices { mouse, keyboard })
+}
+
+/// Resets the machine through the keyboard controller. Returns only if that failed.
+pub fn reset_cpu() {
+    let _ = command(CMD_RESET_CPU);
+}
+
+/// Reads everything waiting in the controller and routes each byte to the
+/// keyboard or mouse decoder (the status register says which it came from).
+fn drain(mut mouse: impl FnMut(MouseEvent), mut key: impl FnMut(Input)) {
     for _ in 0..256 {
         // SAFETY: reading the status/data ports of the controller we own.
         let status = unsafe { inb(STATUS) };
@@ -256,10 +359,12 @@ pub fn poll(mut f: impl FnMut(MouseEvent)) {
         }
         // SAFETY: as above.
         let byte = unsafe { inb(DATA) };
-        if status & ST_FROM_MOUSE != 0
-            && let Some(ev) = DECODER.with(|d| d.feed(byte))
-        {
-            f(ev);
+        if status & ST_FROM_MOUSE != 0 {
+            if let Some(ev) = DECODER.with(|d| d.feed(byte)) {
+                mouse(ev);
+            }
+        } else if let Some(input) = KBD.with(|k| k.feed(byte)) {
+            key(input);
         }
     }
 }

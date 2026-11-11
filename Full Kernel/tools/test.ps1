@@ -59,7 +59,7 @@ try {
     finally {
         & (Join-Path $PSScriptRoot 'build.ps1')   # back to the normal kernel
     }
-    Step 'normal boot + mouse (move, left click, right click)' { python -I tools\boot_test.py --mouse }
+    Step 'normal boot + mouse + keyboard/shell' { python -I tools\boot_test.py --mouse --shell }
 
     $kernel = 'build\esp\NOVA\KERNEL.ELF'
     Move-Item $kernel "$kernel.hold" -Force

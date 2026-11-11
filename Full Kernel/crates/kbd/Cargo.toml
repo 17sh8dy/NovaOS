@@ -1,0 +1,6 @@
+[package]
+name = "nova-kbd"
+description = "PS/2 keyboard scancode (set 1) decoding, US layout and modifier tracking (pure logic)."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true

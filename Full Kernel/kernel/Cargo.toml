@@ -20,3 +20,5 @@ nova-heap = { path = "../crates/heap" }
 nova-ps2 = { path = "../crates/ps2" }
 nova-acpi = { path = "../crates/acpi" }
 nova-apic = { path = "../crates/apic" }
+nova-kbd = { path = "../crates/kbd" }
+nova-console = { path = "../crates/console" }
