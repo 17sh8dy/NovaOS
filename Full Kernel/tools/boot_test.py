@@ -483,6 +483,199 @@ def usb_test(qmp, serial, typed: bool, moved: bool) -> str | None:
     return None
 
 
+def screenshot(qmp, name):
+    """Saves the guest screen to build/<name>.png."""
+    ppm = q.BUILD / f"{name}.ppm"
+    qmp.cmd("screendump", filename=str(ppm))
+    time.sleep(0.3)
+    (q.BUILD / f"{name}.png").write_bytes(ppm_to_png(ppm.read_bytes()))
+    ppm.unlink(missing_ok=True)
+
+
+def desktop_test(qmp, serial) -> str | None:
+    """Uses the desktop like a person would, through QEMU's mouse and keyboard:
+    the launcher, the Files window (keyboard browsing, preview), dragging,
+    closing, focus moving between windows (and with it the keyboard), the
+    System window, minimising and restoring from the taskbar. Every click's
+    position is checked against what the kernel says the pointer did."""
+
+    def log():
+        return read_log(serial)
+
+    def wait_for(pattern, seconds=15):
+        end = time.time() + seconds
+        while time.time() < end:
+            m = re.search(pattern, log())
+            if m:
+                return m
+            time.sleep(0.1)
+        return None
+
+    def count(pattern):
+        return len(re.findall(pattern, log()))
+
+    def wait_new(pattern, before, seconds=15):
+        end = time.time() + seconds
+        while time.time() < end:
+            ms = re.findall(pattern, log())
+            if len(ms) > before:
+                return ms[-1]
+            time.sleep(0.1)
+        return None
+
+    # Where is the pointer now? The last button event or first movement says.
+    pos = None
+    for m in re.finditer(r"mouse: (?:first movement, pointer|left button (?:down|up)|right button (?:down|up)) at \((\d+), (\d+)\)", log()):
+        pos = [int(m.group(1)), int(m.group(2))]
+    if pos is None:
+        m = re.search(r"desktop: (\d+)x(\d+),", log())
+        pos = [int(m.group(1)) // 2, int(m.group(2)) // 2]
+
+    def move_to(x, y):
+        dx, dy = x - pos[0], y - pos[1]
+        while dx or dy:
+            sx = max(-80, min(80, dx))
+            sy = max(-80, min(80, dy))
+            qmp.cmd("input-send-event", events=[
+                {"type": "rel", "data": {"axis": "x", "value": sx}},
+                {"type": "rel", "data": {"axis": "y", "value": sy}},
+            ])
+            dx -= sx
+            dy -= sy
+            time.sleep(0.03)
+        pos[0], pos[1] = x, y
+
+    def button(down):
+        before = count(rf"mouse: left button {'down' if down else 'up'} at \({pos[0]}, {pos[1]}\)")
+        qmp.cmd("input-send-event", events=[{"type": "btn", "data": {"down": down, "button": "left"}}])
+        if wait_new(rf"mouse: left button {'down' if down else 'up'} at \({pos[0]}, {pos[1]}\)", before, 5) is None:
+            raise AssertionError(f"the kernel did not see the button {'press' if down else 'release'} at {tuple(pos)} "
+                                 f"(pointer out of step?)")
+
+    def click(x, y):
+        move_to(x, y)
+        button(True)
+        button(False)
+
+    def geometry(name, what):
+        m = wait_for(rf"wm: {name} {what} at \((-?\d+), (-?\d+)\) \d+x\d+: title \((\d+), (\d+)\), close \((\d+), (\d+)\), "
+                     rf"minimize \((\d+), (\d+)\), taskbar \((\d+), (\d+)\)")
+        if not m:
+            return None
+        v = [int(g) for g in m.groups()]
+        return {"at": (v[0], v[1]), "title": (v[2], v[3]), "close": (v[4], v[5]), "min": (v[6], v[7]), "task": (v[8], v[9])}
+
+    def menu_item(name):
+        before = count(r"desktop: menu opened")
+        click(*launcher)
+        if wait_new(r"desktop: menu opened", before, 5) is None:
+            return None
+        m = re.findall(rf"desktop: menu opened: .*?{name} at \((\d+), (\d+)\)", log())
+        return (int(m[-1][0]), int(m[-1][1])) if m else None
+
+    try:
+        m = wait_for(r"desktop: ready; launcher at \((\d+), (\d+)\)")
+        if not m:
+            return "the desktop never said it was ready"
+        launcher = (int(m.group(1)), int(m.group(2)))
+        if not wait_for(r"shell: ready"):
+            return "the shell never started"
+        term = geometry("Terminal", "open")
+
+        # Something to look at in Files (the RAM file system is fine).
+        for command, expect in [("install", r"con: installed \d+ programs"), ("mkdir /docs", None),
+                                ("write /docs/hello.txt Hello from the Files window", r"con: wrote \d+ bytes")]:
+            type_text(qmp, command + "\n")
+            if expect and not wait_for(expect):
+                return f"terminal: {command!r} did not answer {expect!r}"
+            time.sleep(0.3)
+
+        # Open Files from the launcher.
+        item = menu_item("Files")
+        if not item:
+            return "clicking the launcher did not open the menu"
+        click(*item)
+        files = geometry("Files", "opened")
+        if not files:
+            return "choosing Files in the menu did not open the Files window"
+        if not wait_for(r"files: / \(\d+ entries\)"):
+            return "Files did not list /"
+
+        # Keyboard browsing (keys now go to Files, not the shell).
+        before = count(r"files: /bin \(")
+        press(qmp, "ret")
+        if wait_new(r"files: /bin \((\d+) entries\)", before, 5) is None:
+            return "Enter on 'bin' did not open /bin"
+        press(qmp, "backspace")
+        press(qmp, "down")
+        press(qmp, "ret")
+        if not wait_for(r"files: /docs \(1 entries\)"):
+            return "Backspace, Down, Enter did not open /docs"
+        press(qmp, "down")
+        if not wait_for(r"files: preview /docs/hello.txt \(\d+ bytes\)"):
+            return "selecting hello.txt did not preview it"
+        time.sleep(0.3)
+        screenshot(qmp, "desktop_files")
+        type_text(qmp, "echo leaked\n")
+        time.sleep(1.0)
+        if "con: leaked" in log():
+            return "typing into the Files window reached the shell"
+
+        # Drag Files by its title bar.
+        tx, ty = files["title"]
+        move_to(tx, ty)
+        button(True)
+        move_to(tx - 200, ty + 60)
+        button(False)
+        moved = geometry("Files", "moved")
+        want = (files["at"][0] - 200, files["at"][1] + 60)
+        if not moved or moved["at"] != want:
+            return f"dragging the title bar should move Files to {want}, got {moved and moved['at']}"
+
+        # Close it: focus (and the keyboard) fall back to the Terminal.
+        click(*moved["close"])
+        if not wait_for(r"wm: Files closed; focus Terminal"):
+            return "the close button did not close Files (or focus did not return to the Terminal)"
+        type_text(qmp, "echo back in the terminal\n")
+        if not wait_for(r"con: back in the terminal"):
+            return "after Files closed, typing did not reach the shell"
+
+        # System: open; click the Terminal to focus it, then System's taskbar button.
+        item = menu_item("System")
+        click(*item)
+        system = geometry("System", "opened")
+        if not system or not wait_for(r"system: window shows \d+ lines"):
+            return "the System window did not open"
+        click(*term["title"])
+        if not wait_for(r"wm: focus Terminal"):
+            return "clicking the Terminal's title did not focus it"
+        type_text(qmp, "echo focus follows clicks\n")
+        if not wait_for(r"con: focus follows clicks"):
+            return "after clicking the Terminal, typing did not reach the shell"
+        if count(r"wm: Terminal moved") or count(r"wm: Files moved") != 1:
+            return "a click on a title bar was reported as a move"
+        click(*system["task"])
+        if not wait_for(r"wm: focus System"):
+            return "System's taskbar button did not bring it to the front"
+        click(*system["task"])
+        if not wait_for(r"wm: System minimized"):
+            return "clicking the focused window's taskbar button did not minimise it"
+        click(*system["task"])
+        if not wait_for(r"wm: System restored"):
+            return "clicking a minimised window's taskbar button did not restore it"
+        time.sleep(1.2)  # a clock tick and a System refresh
+        screenshot(qmp, "desktop_system")
+        # Hand the keyboard back to the shell for whatever test runs next.
+        before = count(r"wm: focus Terminal")
+        click(*term["title"])
+        if wait_new(r"wm: focus Terminal", before, 5) is None:
+            return "could not give the Terminal the focus back"
+        move_to(pos[0], pos[1] - 120)  # keep the pointer off the taskbar for the last screenshot
+    except AssertionError as e:
+        return str(e)
+    return None
+
+
 def main() -> int:
     import argparse
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -496,6 +689,7 @@ def main() -> int:
     ap.add_argument("--disk-kind", choices=sorted(DISK_KINDS), default="sata", help="which disk the storage test uses")
     ap.add_argument("--no-ps2", action="store_true", help="a machine without a PS/2 controller (like most laptops): USB is the only input")
     ap.add_argument("--nvme-block", type=int, choices=(512, 4096), default=512, help="sector size of the virtual NVMe disk")
+    ap.add_argument("--desktop", action="store_true", help="use the desktop: launcher, Files, dragging, focus, System, taskbar")
     ap.add_argument("--usb", action="store_true", help="attach a USB keyboard + mouse (QEMU input goes to them) and test USB")
     ap.add_argument("--fresh-disk", action="store_true", help="start from a blank virtual disk")
     ap.add_argument("--user", action="store_true", help="after boot, run user-space programs from the shell")
@@ -575,6 +769,14 @@ def main() -> int:
                 reason = "USB test: " + problem
             else:
                 print("USB: keyboard and mouse found, typing and pointing came through USB, unplug + replug worked")
+
+        if ok and opts.desktop and not opts.expect:
+            problem = desktop_test(qmp, serial)
+            if problem:
+                ok = False
+                reason = "desktop test: " + problem
+            else:
+                print("Desktop: launcher, Files (browse + preview), drag, close, focus + keyboard routing, System, taskbar minimise/restore all worked")
 
         if ok and opts.user and not opts.expect:
             problem = user_test(qmp, serial)

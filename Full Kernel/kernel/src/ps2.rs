@@ -10,7 +10,7 @@
 //! (`crates/ps2`) are host-tested; this file talks to the hardware.
 
 use crate::log::SpinLock;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use nova_kbd::Input;
 use nova_ps2::{Decoder, MouseEvent};
 use nova_x86::{inb, outb};
@@ -89,6 +89,10 @@ struct KeyQueue {
 }
 
 static KEYS: SpinLock<KeyQueue> = SpinLock::new(KeyQueue { buf: [None; 64], head: 0, len: 0 });
+/// Keys typed while another window than the Terminal has focus (for the desktop).
+static UI_KEYS: SpinLock<KeyQueue> = SpinLock::new(KeyQueue { buf: [None; 64], head: 0, len: 0 });
+/// Whether typing goes to the shell (the Terminal window is focused) or to the desktop.
+static TERMINAL_FOCUS: AtomicBool = AtomicBool::new(true);
 static KBD: SpinLock<nova_kbd::Pipeline> = SpinLock::new(nova_kbd::Pipeline::new());
 /// Thread to wake when typed input arrives (usize::MAX = none).
 static KEY_WAITER: AtomicUsize = AtomicUsize::new(usize::MAX);
@@ -98,30 +102,57 @@ pub fn set_key_waiter(thread: usize) {
     KEY_WAITER.store(thread, Ordering::SeqCst);
 }
 
-/// The oldest typed input, if any.
+/// The oldest typed input for the shell, if any.
 pub fn pop_key() -> Option<Input> {
-    KEYS.with(|k| {
-        if k.len == 0 {
-            return None;
-        }
-        let v = k.buf[k.head].take();
-        k.head = (k.head + 1) % k.buf.len();
-        k.len -= 1;
-        v
-    })
+    KEYS.with(|k| k.pop())
 }
 
-fn push_key(input: Input) {
-    KEYS.with(|k| {
-        let cap = k.buf.len();
-        if k.len == cap {
-            k.head = (k.head + 1) % cap;
-            k.len -= 1;
+/// The oldest key typed into a desktop window other than the Terminal.
+pub fn pop_ui_key() -> Option<Input> {
+    UI_KEYS.with(|k| k.pop())
+}
+
+pub fn has_ui_keys() -> bool {
+    UI_KEYS.with(|k| k.len > 0)
+}
+
+/// The desktop says whether the Terminal window has the keyboard focus.
+pub fn set_terminal_focus(focused: bool) {
+    TERMINAL_FOCUS.store(focused, Ordering::SeqCst);
+}
+
+impl KeyQueue {
+    fn pop(&mut self) -> Option<Input> {
+        if self.len == 0 {
+            return None;
         }
-        let at = (k.head + k.len) % cap;
-        k.buf[at] = Some(input);
-        k.len += 1;
-    });
+        let v = self.buf[self.head].take();
+        self.head = (self.head + 1) % self.buf.len();
+        self.len -= 1;
+        v
+    }
+
+    fn push(&mut self, input: Input) {
+        let cap = self.buf.len();
+        if self.len == cap {
+            self.head = (self.head + 1) % cap;
+            self.len -= 1;
+        }
+        let at = (self.head + self.len) % cap;
+        self.buf[at] = Some(input);
+        self.len += 1;
+    }
+}
+
+/// Queues a key for whoever has the focus. Returns true if it went to the shell.
+fn push_key(input: Input) -> bool {
+    if TERMINAL_FOCUS.load(Ordering::SeqCst) {
+        KEYS.with(|k| k.push(input));
+        true
+    } else {
+        UI_KEYS.with(|k| k.push(input));
+        false
+    }
 }
 
 /// Reads whatever the keyboard and mouse have sent into their queues.
@@ -130,8 +161,7 @@ pub fn pump() {
     drain(
         |ev| QUEUE.with(|q| q.push(ev)),
         |input| {
-            push_key(input);
-            typed = true;
+            typed |= push_key(input);
         },
     );
     if typed {
@@ -144,9 +174,8 @@ pub fn pump() {
 
 /// Typed input from another keyboard (USB): queued for the shell like PS/2 keys.
 pub fn push_typed(input: Input) {
-    push_key(input);
     let w = KEY_WAITER.load(Ordering::SeqCst);
-    if w != usize::MAX {
+    if push_key(input) && w != usize::MAX {
         crate::sched::unpark(w);
     }
 }

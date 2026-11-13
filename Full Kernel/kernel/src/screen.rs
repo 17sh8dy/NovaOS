@@ -41,43 +41,30 @@ impl Screen {
         }
     }
 
-    /// The raw pixel at (x, y); 0 if outside the screen.
-    pub fn get_raw(&self, x: usize, y: usize) -> u32 {
-        if x < self.width() && y < self.height() {
-            // SAFETY: (x, y) is inside the framebuffer (checked above).
-            unsafe { self.base.add(y * self.fb.stride as usize + x).read_volatile() }
-        } else {
-            0
+    /// Copies rectangle `r` of `canvas` (0x00RRGGBB pixels, same size as the
+    /// screen) to the same place on screen.
+    pub fn present(&mut self, canvas: &nova_gfx::Canvas, r: nova_gfx::Rect) {
+        let r = r.intersect(&nova_gfx::Rect::new(0, 0, self.width().min(canvas.width()) as i32, self.height().min(canvas.height()) as i32));
+        if r.is_empty() {
+            return;
         }
-    }
-
-    /// Writes a raw (already packed) pixel; ignored outside the screen.
-    pub fn put_raw(&mut self, x: usize, y: usize, px: u32) {
-        if x < self.width() && y < self.height() {
-            // SAFETY: (x, y) is inside the framebuffer (checked above).
-            unsafe { self.base.add(y * self.fb.stride as usize + x).write_volatile(px) };
-        }
-    }
-
-    /// Draws one character in a (WIDTH+1) x (HEIGHT+2) cell at pixel (x, y), both
-    /// colours given as packed pixels (see [`Screen::pack`]); `scale` enlarges it.
-    pub fn draw_cell(&mut self, x: usize, y: usize, scale: usize, fg: u32, bg: u32, ch: char) {
-        let glyph = font::glyph9(ch);
-        for (gy, &bits) in glyph.iter().enumerate() {
-            for gx in 0..font::WIDTH + 1 {
-                let on = gx < font::WIDTH && bits & (0x10 >> gx) != 0;
-                let px = if on { fg } else { bg };
-                for sy in 0..scale {
-                    for sx in 0..scale {
-                        self.put_raw(x + gx * scale + sx, y + gy * scale + sy, px);
-                    }
+        let same_layout = self.fb.pack(0x12, 0x34, 0x56) == 0x0012_3456;
+        let stride = self.fb.stride as usize;
+        for y in r.y as usize..r.bottom() as usize {
+            let src = canvas.span(r.x as usize, y, r.w as usize);
+            // SAFETY: the row segment lies inside the framebuffer (clipped above).
+            let dst = unsafe { self.base.add(y * stride + r.x as usize) };
+            if same_layout {
+                // SAFETY: `src` and the framebuffer don't overlap; both are r.w pixels long.
+                unsafe { core::ptr::copy_nonoverlapping(src.as_ptr(), dst, src.len()) };
+            } else {
+                for (i, &p) in src.iter().enumerate() {
+                    let px = self.fb.pack((p >> 16) as u8, (p >> 8) as u8, p as u8);
+                    // SAFETY: as above.
+                    unsafe { dst.add(i).write_volatile(px) };
                 }
             }
         }
-    }
-
-    pub fn pack(&self, c: Rgb) -> u32 {
-        self.fb.pack(c.0, c.1, c.2)
     }
 
     pub fn fill_rect(&mut self, x: usize, y: usize, w: usize, h: usize, c: Rgb) {
@@ -102,21 +89,6 @@ impl Screen {
         }
     }
 
-    /// A four-pointed star centred at (cx, cy) with arm length `r`.
-    pub fn star(&mut self, cx: usize, cy: usize, r: usize, c: Rgb) {
-        let r = r as i64;
-        let waist = (r / 5).max(1);
-        for dy in -r..=r {
-            for dx in -r..=r {
-                // Inside the star where |dx|·|dy| is small: concave sides
-                // that meet in four sharp points.
-                if dx.abs() * dy.abs() <= waist * waist && dx.abs() + dy.abs() <= r {
-                    self.put((cx as i64 + dx) as usize, (cy as i64 + dy) as usize, c);
-                }
-            }
-        }
-    }
-
     pub fn text(&mut self, x: usize, y: usize, scale: usize, c: Rgb, s: &str) {
         for (i, ch) in s.chars().enumerate() {
             let g = font::glyph(ch);
@@ -131,22 +103,6 @@ impl Screen {
         }
     }
 
-    /// Width in pixels of `s` drawn at `scale`.
-    pub fn text_width(s: &str, scale: usize) -> usize {
-        let n = s.chars().count();
-        if n == 0 { 0 } else { (n * (font::WIDTH + 1) - 1) * scale }
-    }
-
-    /// Draws `s` centred horizontally, shrinking it if it would not fit.
-    pub fn text_centered(&mut self, y: usize, scale: usize, c: Rgb, s: &str) {
-        let mut scale = scale.max(1);
-        while scale > 1 && Self::text_width(s, scale) + 32 > self.width() {
-            scale -= 1;
-        }
-        let w = Self::text_width(s, scale);
-        let x = self.width().saturating_sub(w) / 2;
-        self.text(x, y, scale, c, s);
-    }
 }
 
 /// A fixed-capacity string for formatting text without a heap.

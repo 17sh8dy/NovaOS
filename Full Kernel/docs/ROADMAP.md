@@ -14,9 +14,39 @@ Each stage ends with something that boots and is checked by `tools\test.ps1`.
 | 8 | User space ✅ | Ring 3, system calls, ELF programs (built into the kernel until stage 9 gives us a disk) |
 | 9 | Storage + files ✅ | AHCI + NVMe drivers, a filesystem, a VFS |
 | 9b | Real-hardware input ✅ | xHCI USB: keyboards + mice (boot protocol), hot plug, works with no PS/2 controller |
-| 10 | Nova shell | First real Nova user interface running on Nova itself |
+| 10 | Nova desktop + shell | 10a ✅ the Nova desktop (windows, taskbar, launcher; Terminal, Files, System). 10b: the shell as a user program |
 
 Later: USB hubs and storage, networking, GPU, real-hardware testing on a USB stick.
+
+## Stage 10a notes: the Nova desktop
+
+* **`crates/gfx`** (6 host tests): `Canvas` (0x00RRGGBB pixels in memory: clipped fill, blit, text, console
+  cells, gradient, star), `Rect` maths, and the 5x7 font (moved here from the kernel).
+* **`crates/desktop`** (24 host tests): the window manager and compositor as pure logic. Windows with title
+  bar, minimise and close buttons and a soft shadow; stacking order and focus (click to focus + raise);
+  dragging by the title bar (a window can't be dragged out of reach); a taskbar with the Nova launcher
+  (menu), one button per open/minimised window (click: focus, minimise if already in front, restore) and a
+  clock; the pointer. Every change records **damage**; `compose(area)` redraws exactly that rectangle
+  (wallpaper, windows bottom to top, taskbar, menu, pointer); a test checks that composing in pieces gives
+  the same picture as all at once. `apps.rs`: the Files view (folder list with `..`, folders first, keyboard
+  and click navigation, scrolling, a wrapped text preview of the selected file) and the System info page;
+  they *ask* for data (`Request`) and the kernel answers, so they are host-tested too.
+* **Kernel:** `gui.rs` keeps a back buffer the size of the screen; after each change the damaged rectangles
+  are composed and copied to the (write-combining) framebuffer (`Screen::present`, a straight row copy when
+  the pixel layout matches). The console API the shell uses is unchanged: its grid is now drawn into the
+  Terminal window. `desktop.rs` is the boot thread's loop: mouse to the desktop, clicks to apps, disk access
+  for Files *outside* the GUI lock, the System page refreshed every second, the clock from the CMOS RTC
+  (`rtc.rs`, decoding host-tested in `crates/x86`). Keyboard focus: `ps2` sends keys to the shell only while
+  the Terminal window is focused, otherwise to the desktop (Files uses arrows/Enter/Backspace; the wheel
+  scrolls it).
+* **Tests:** `boot_test.py --desktop` uses the desktop through QEMU's mouse and keyboard: launcher -> Files,
+  browse with the keyboard, preview a file, check typing into Files does not reach the shell, drag Files by
+  its title bar to an exact position, close it (focus returns to the Terminal), open System, click-to-focus,
+  minimise and restore from the taskbar; every click's position is checked against the kernel's log; it
+  saves `desktop_files.png` and `desktop_system.png`. Run with PS/2 and with USB-only input.
+* Gaps: no window resizing or maximise; one Terminal (closing it hides it; the shell keeps running); no
+  hover effects, no double-click, no drag-and-drop, no Alt+Tab; the RTC is shown as-is (no time zones); apps
+  are kernel code (user-space GUI programs need a window system-call API, later); fonts are the 5x7 bitmap.
 
 ## NVMe + USB notes (after stage 9, before stage 10)
 

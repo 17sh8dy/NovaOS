@@ -29,11 +29,22 @@ name = "nova-console"
 version = "0.1.0"
 
 [[package]]
+name = "nova-desktop"
+version = "0.1.0"
+dependencies = [
+ "nova-gfx",
+]
+
+[[package]]
 name = "nova-elf"
 version = "0.1.0"
 
 [[package]]
 name = "nova-fs"
+version = "0.1.0"
+
+[[package]]
+name = "nova-gfx"
 version = "0.1.0"
 
 [[package]]
@@ -52,8 +63,10 @@ dependencies = [
  "nova-apic",
  "nova-bootinfo",
  "nova-console",
+ "nova-desktop",
  "nova-elf",
  "nova-fs",
+ "nova-gfx",
  "nova-heap",
  "nova-kbd",
  "nova-nvme",

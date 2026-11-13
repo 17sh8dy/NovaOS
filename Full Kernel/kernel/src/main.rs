@@ -13,7 +13,8 @@
 //! Stage 6: PS/2 keyboard, a scrolling text console and a shell thread.
 //! Stage 8: user space. Stage 9: PCI, SATA + NVMe disks, NovaFS.
 //! Real-hardware drivers: NVMe SSDs and USB (xHCI) keyboards and mice.
-//! Next: the Nova shell/UI (docs/ROADMAP.md).
+//! Stage 10: the Nova desktop (windows, taskbar, Terminal / Files / System).
+//! Next: the shell as a user program (docs/ROADMAP.md).
 
 #![no_std]
 #![no_main]
@@ -26,7 +27,7 @@ mod apic;
 mod bootdata;
 mod cpu;
 mod crash;
-mod cursor;
+mod desktop;
 mod exceptions;
 mod faults;
 mod files;
@@ -39,6 +40,7 @@ mod log;
 mod nvme;
 mod pci;
 mod pmm;
+mod rtc;
 mod process;
 mod programs;
 mod ps2;
@@ -324,7 +326,7 @@ fn kmain(boot_copy: &'static BootInfo) -> ! {
 
     kprintln!("{READY_MARKER}");
     if have_gui && (mouse || keyboard || usb_input) {
-        desktop(irq_mode)
+        desktop::run(irq_mode)
     } else {
         nova_x86::halt_forever()
     }
@@ -458,80 +460,6 @@ fn pmm_self_test(when: &str) {
             if t.exhausted { "; ran until memory was exhausted" } else { "" }
         ),
         Err(e) => panic!("pmm self-test FAILED{when}: {e}"),
-    }
-}
-
-/// What the main thread does once the kernel is up: follow the mouse, keep
-/// the clock and the text cursor going. With interrupts the CPU sleeps
-/// (`hlt`) between events; without them it falls back to polling. (Typing is
-/// handled by the shell thread.)
-fn desktop(irq_mode: bool) -> ! {
-    use nova_ps2::Buttons;
-
-    let mut moved_once = false;
-    let mut last_secs = u64::MAX;
-    let mut last_blink = 0;
-    let mut wakeups: u64 = 0;
-    let mut idle_reported = false;
-
-    loop {
-        if !irq_mode {
-            ps2::pump();
-        }
-        while let Some(ev) = ps2::pop() {
-            let Some((change, x, y)) = gui::mouse(ev) else { continue };
-            if change.is_empty() {
-                continue;
-            }
-            if change.moved && !moved_once {
-                moved_once = true;
-                kprintln!("mouse: first movement, pointer at ({x}, {y})");
-            }
-            for (bit, name) in [(Buttons::LEFT, "left"), (Buttons::RIGHT, "right"), (Buttons::MIDDLE, "middle")] {
-                if change.pressed.0 & bit != 0 {
-                    kprintln!("mouse: {name} button down at ({x}, {y})");
-                }
-                if change.released.0 & bit != 0 {
-                    kprintln!("mouse: {name} button up at ({x}, {y})");
-                }
-            }
-            if change.wheel != 0 {
-                kprintln!("mouse: wheel {}", change.wheel);
-            }
-        }
-        let ticks = interrupts::ticks();
-        let secs = ticks / interrupts::TICK_HZ as u64;
-        if secs != last_secs {
-            last_secs = secs;
-            gui::set_uptime(secs);
-        }
-        // The text cursor blinks twice a second.
-        if ticks / (interrupts::TICK_HZ as u64 / 2) != last_blink {
-            last_blink = ticks / (interrupts::TICK_HZ as u64 / 2);
-            gui::blink();
-        }
-        // Proof that the CPU really sleeps: a busy loop would have spun
-        // millions of times by now, an idle one wakes about once per tick.
-        if irq_mode && secs >= 3 && !idle_reported {
-            idle_reported = true;
-            kprintln!(
-                "idle: up {secs} s, {wakeups} wakeups from hlt, {} stray + {} spurious interrupts",
-                interrupts::stray_count(),
-                interrupts::spurious_count()
-            );
-        }
-        if irq_mode {
-            wakeups += 1;
-            // Sleep until the next interrupt, unless an event arrived since we looked.
-            nova_x86::cli();
-            if ps2::has_events() {
-                nova_x86::sti();
-            } else {
-                nova_x86::sti_hlt();
-            }
-        } else {
-            core::hint::spin_loop();
-        }
     }
 }
 

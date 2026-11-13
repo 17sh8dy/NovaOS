@@ -66,6 +66,12 @@ keyboard and pointer. Plugging and unplugging works while Nova runs. `.\tools\ru
 virtual USB keyboard and mouse in (QEMU then sends your typing to them instead of PS/2); `usb` in the
 shell lists what is attached. Not yet: USB hubs, USB sticks, and non-boot-protocol HID devices.
 
+**Stage 10a: the Nova desktop — done.** Nova boots into its own desktop: a wallpaper, windows you can
+drag, focus, minimise and close, and a taskbar with the **Nova** launcher, a button per window and a clock.
+Three apps: **Terminal** (the shell, unchanged), **Files** (browse the disk with the mouse or the arrow
+keys, preview text files) and **System** (CPUs, memory, disks, USB devices, uptime). Typing goes to
+whichever window has focus. Next: the shell becomes a user program (10b).
+
 Next stages are in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Layout
@@ -85,6 +91,8 @@ Next stages are in [docs/ROADMAP.md](docs/ROADMAP.md).
 | `crates/fs` | NovaFS (on-disk file system) + fsck, RAM file system, VFS |
 | `crates/nvme` | NVMe commands, queue bookkeeping, IDENTIFY parsing |
 | `crates/usb` | xHCI rings/TRBs/contexts, USB descriptors, HID boot keyboard + mouse reports |
+| `crates/gfx` | Off-screen canvases, rectangles, the 5x7 font |
+| `crates/desktop` | Window manager + compositor (windows, focus, drag, taskbar, launcher, damage), Files/System views |
 | `crates/kbd` | Keyboard scancode decoding, US layout, modifiers |
 | `crates/console` | Text grid (scrolling, dirty rows) + line editor |
 | `crates/ps2` | PS/2 mouse packet decoder + pointer tracking |

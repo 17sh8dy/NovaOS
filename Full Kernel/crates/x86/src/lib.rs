@@ -5,6 +5,7 @@
 pub mod exception;
 pub mod gdt;
 pub mod idt;
+pub mod rtc;
 pub mod serial;
 
 use core::arch::asm;

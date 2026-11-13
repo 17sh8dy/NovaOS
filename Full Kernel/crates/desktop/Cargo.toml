@@ -1,0 +1,9 @@
+[package]
+name = "nova-desktop"
+description = "Nova's window manager and compositor: windows, focus, dragging, taskbar, launcher, damage tracking (pure logic)."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+nova-gfx = { path = "../gfx" }

@@ -1,0 +1,6 @@
+[package]
+name = "nova-gfx"
+description = "Off-screen pixel canvases, rectangles and Nova's bitmap font (pure logic)."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
