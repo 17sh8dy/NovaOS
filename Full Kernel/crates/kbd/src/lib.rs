@@ -116,6 +116,7 @@ fn main_block(code: u8) -> Option<Key> {
         0x29 => p('`', '~'),
         0x2A => Key::LeftShift,
         0x2B => p('\\', '|'),
+        0x56 => p('\\', '|'), // the ISO key next to left Shift
         0x2C => l('z', 'Z'),
         0x2D => l('x', 'X'),
         0x2E => l('c', 'C'),

@@ -337,9 +337,17 @@ def user_test(qmp, serial) -> str | None:
     return None
 
 
-def disk_test(qmp, serial, phase) -> str | None:
+DISK_KINDS = {
+    # kind: (log line that finds it, model + size + bus as `disks` prints it)
+    "sata": (r"ahci: disk (\d+): QEMU HARDDISK \(64 MiB\)", r"QEMU HARDDISK, 64 MiB, SATA"),
+    "nvme": (r"nvme: disk (\d+): QEMU NVMe Ctrl \(64 MiB\)", r"QEMU NVMe Ctrl, 64 MiB, NVMe"),
+}
+
+
+def disk_test(qmp, serial, phase, kind="sata") -> str | None:
     """Phase 1 formats the (blank) virtual disk, installs programs and writes files.
-    Phase 2 boots again on the SAME disk and checks everything survived."""
+    Phase 2 boots again on the SAME disk and checks everything survived.
+    `kind` picks the SATA or the NVMe disk."""
 
     def wait_for(pattern, seconds=20):
         end = time.time() + seconds
@@ -366,17 +374,19 @@ def disk_test(qmp, serial, phase) -> str | None:
     if not wait_for(r"shell: ready"):
         return "the shell never started"
     log = read_log(serial)
-    if "ahci: disk 1:" not in log:
-        return "the second (Nova) disk was not found"
+    found_re, listed_re = DISK_KINDS[kind]
+    found = re.search(found_re, log)
+    if not found:
+        return f"the {kind.upper()} disk was not found at boot"
+    target = found.group(1)
 
     if phase == 1:
         if "no NovaFS on any disk" not in log:
             return "a fresh disk should not contain a NovaFS"
-        m = wait_for(r"con: +disk (\d+): QEMU HARDDISK, 64 MiB") or None
         type_text(qmp, "disks\n")
-        m = wait_for(r"con: +disk (\d+): QEMU HARDDISK, 64 MiB")
+        m = wait_for(rf"con: +disk ({target}): {listed_re}")
         if not m:
-            return "the 64 MiB disk was not listed"
+            return f"the 64 MiB {kind.upper()} disk was not listed as disk {target}"
         idx = m.group(1)
         steps = [
             (f"format {idx} erase", r"con: formatted disk \d+ with NovaFS"),
@@ -399,8 +409,8 @@ def disk_test(qmp, serial, phase) -> str | None:
             ("sync", r"con: synced"),
         ]
     else:
-        if "vfs: mounted NovaFS from disk 1 at /" not in log:
-            return "the NovaFS on the disk was not mounted at boot"
+        if f"vfs: mounted NovaFS from disk {target} at /" not in log:
+            return f"the NovaFS on disk {target} was not mounted at boot"
         steps = [
             ("cat /docs/note.txt", r"con: persistent hello world"),
             ("ls /bin", r"con: +\d+ +hello"),
@@ -426,6 +436,53 @@ def disk_test(qmp, serial, phase) -> str | None:
     return None
 
 
+def usb_test(qmp, serial, typed: bool, moved: bool) -> str | None:
+    """With a USB keyboard and mouse attached: they were found, the keys and
+    pointer the other tests used really came through USB, and unplugging and
+    plugging the keyboard back in works."""
+
+    def wait_for(pattern, seconds=15):
+        end = time.time() + seconds
+        while time.time() < end:
+            m = re.search(pattern, read_log(serial))
+            if m:
+                return m
+            time.sleep(0.1)
+        return None
+
+    def count(pattern):
+        return len(re.findall(pattern, read_log(serial)))
+
+    for pattern, what in [
+        (r"usb: port \d+: QEMU USB Keyboard \(0627:0001\), [^:]+: keyboard", "the USB keyboard was not set up"),
+        (r"usb: port \d+: QEMU USB Mouse \(0627:0001\), [^:]+: mouse", "the USB mouse was not set up"),
+        *([(r"usb: first key from QEMU USB Keyboard", "no key arrived through the USB keyboard")] if typed else []),
+        *([(r"usb: first report from QEMU USB Mouse", "no movement arrived through the USB mouse")] if moved else []),
+    ]:
+        if not wait_for(pattern, 5):
+            return what
+    type_text(qmp, "usb\n")
+    if not wait_for(r"con:   port \d+: QEMU USB Keyboard, .*keyboard"):
+        return "the 'usb' command did not list the keyboard"
+
+    # Unplug the keyboard, plug it back in, and type through it again.
+    attached = r"usb: port \d+: QEMU USB Keyboard \("
+    qmp.cmd("device_del", id="usbkbd")
+    if not wait_for(r"usb: port \d+: QEMU USB Keyboard unplugged", 10):
+        return "unplugging the keyboard was not noticed"
+    qmp.cmd("device_add", driver="usb-kbd", bus="xhci.0", id="usbkbd")
+    end = time.time() + 10
+    while time.time() < end and count(attached) < 2:
+        time.sleep(0.1)
+    if count(attached) < 2:
+        return "the keyboard was not set up again after plugging it back in"
+    time.sleep(0.5)
+    type_text(qmp, "echo replugged ok\n")
+    if not wait_for(r"con: replugged ok"):
+        return "typing did not work after plugging the keyboard back in"
+    return None
+
+
 def main() -> int:
     import argparse
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -436,6 +493,10 @@ def main() -> int:
     ap.add_argument("--cpus", type=int, default=None, help="virtual CPUs (default 4, or NOVA_CPUS)")
     ap.add_argument("--shot", default="boot_test", help="screenshot name (build/<name>.png)")
     ap.add_argument("--disk-phase", type=int, choices=(1, 2), help="storage test: 1 = format + write files, 2 = boot again and check they persist")
+    ap.add_argument("--disk-kind", choices=sorted(DISK_KINDS), default="sata", help="which disk the storage test uses")
+    ap.add_argument("--no-ps2", action="store_true", help="a machine without a PS/2 controller (like most laptops): USB is the only input")
+    ap.add_argument("--nvme-block", type=int, choices=(512, 4096), default=512, help="sector size of the virtual NVMe disk")
+    ap.add_argument("--usb", action="store_true", help="attach a USB keyboard + mouse (QEMU input goes to them) and test USB")
     ap.add_argument("--fresh-disk", action="store_true", help="start from a blank virtual disk")
     ap.add_argument("--user", action="store_true", help="after boot, run user-space programs from the shell")
     ap.add_argument("--shell", action="store_true", help="after boot, type commands into the shell through QEMU's keyboard")
@@ -448,7 +509,7 @@ def main() -> int:
     serial = q.BUILD / "serial.log"
     serial.unlink(missing_ok=True)
     port = free_port()
-    args = q.base_args(qemu, opts.memory, opts.cpus) + [
+    args = q.base_args(qemu, opts.memory, opts.cpus, usb=opts.usb, nvme_block=opts.nvme_block, ps2=not opts.no_ps2) + [
         "-display", "none",
         "-serial", "file:serial.log",
         "-qmp", f"tcp:127.0.0.1:{port},server=on,wait=off",
@@ -497,14 +558,23 @@ def main() -> int:
                 print("Shell: typed commands, edited with backspace, used history and Ctrl+C; every reply was correct")
 
         if ok and opts.disk_phase and not opts.expect:
-            problem = disk_test(qmp, serial, opts.disk_phase)
+            problem = disk_test(qmp, serial, opts.disk_phase, opts.disk_kind)
+            kind = opts.disk_kind.upper()
             if problem:
                 ok = False
-                reason = f"disk test (phase {opts.disk_phase}): " + problem
+                reason = f"{kind} disk test (phase {opts.disk_phase}): " + problem
             elif opts.disk_phase == 1:
-                print("Disk (phase 1): formatted, installed programs, wrote files, ran from disk, fsck clean")
+                print(f"{kind} disk (phase 1): formatted, installed programs, wrote files, ran from disk, fsck clean")
             else:
-                print("Disk (phase 2): after a reboot the files, the installed programs and a clean fsck are all still there")
+                print(f"{kind} disk (phase 2): after a reboot the files, the installed programs and a clean fsck are all still there")
+
+        if ok and opts.usb and not opts.expect:
+            problem = usb_test(qmp, serial, typed=opts.shell, moved=opts.mouse)
+            if problem:
+                ok = False
+                reason = "USB test: " + problem
+            else:
+                print("USB: keyboard and mouse found, typing and pointing came through USB, unplug + replug worked")
 
         if ok and opts.user and not opts.expect:
             problem = user_test(qmp, serial)

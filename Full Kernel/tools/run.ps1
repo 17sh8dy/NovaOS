@@ -11,8 +11,12 @@
 
 .PARAMETER Cpus
   Virtual CPUs (default 4).
+
+.PARAMETER Usb
+  Plug a USB keyboard and mouse into the virtual machine. QEMU then sends the
+  window's keyboard and mouse input to them instead of PS/2 (tests the xHCI driver).
 #>
-param([switch]$NoBuild, [string]$Memory = '256M', [int]$Cpus = 4)
+param([switch]$NoBuild, [string]$Memory = '256M', [int]$Cpus = 4, [switch]$Usb)
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -23,7 +27,7 @@ $py = @"
 import sys, json
 sys.path.insert(0, r'$PSScriptRoot')
 import qemu as q
-print(json.dumps(q.base_args(q.find_qemu(), '$Memory', $Cpus)))
+print(json.dumps(q.base_args(q.find_qemu(), '$Memory', $Cpus, usb=$(if ($Usb) { 'True' } else { 'False' }))))
 "@
 $qemuArgs = python -c $py | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { throw 'Could not prepare QEMU' }

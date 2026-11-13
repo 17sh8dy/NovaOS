@@ -56,11 +56,17 @@ dependencies = [
  "nova-fs",
  "nova-heap",
  "nova-kbd",
+ "nova-nvme",
  "nova-paging",
  "nova-pmm",
  "nova-ps2",
+ "nova-usb",
  "nova-x86",
 ]
+
+[[package]]
+name = "nova-nvme"
+version = "0.1.0"
 
 [[package]]
 name = "nova-paging"
@@ -76,6 +82,14 @@ dependencies = [
 [[package]]
 name = "nova-ps2"
 version = "0.1.0"
+
+[[package]]
+name = "nova-usb"
+version = "0.1.0"
+dependencies = [
+ "nova-kbd",
+ "nova-ps2",
+]
 
 [[package]]
 name = "nova-user"

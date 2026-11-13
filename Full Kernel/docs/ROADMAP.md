@@ -9,13 +9,46 @@ Each stage ends with something that boots and is checked by `tools\test.ps1`.
 | 3 | Physical memory manager ✅ | Frame allocator over `Usable` (then reclaimed) regions; unit-tested on the host like `crates/paging` |
 | 4 | Kernel virtual memory + heap ✅ (+ PS/2 mouse, pulled forward) | Kernel-owned page tables (drop the identity map), `alloc` support (Box, Vec) |
 | 5 | Interrupts + time ✅ | ACPI (MADT) parsing, Local APIC + IOAPIC, timer tick, `hlt`-based idle |
-| 6 | Keyboard + console ✅ | PS/2 keyboard (USB later), a scrolling text console on the framebuffer |
+| 6 | Keyboard + console ✅ | PS/2 keyboard (USB keyboards: see below), a scrolling text console on the framebuffer |
 | 7 | Tasks ✅ | Kernel threads and a scheduler; then SMP (start the other cores) |
 | 8 | User space ✅ | Ring 3, system calls, ELF programs (built into the kernel until stage 9 gives us a disk) |
-| 9 | Storage + files ✅ (AHCI; NVMe still to do) | AHCI/NVMe driver, a filesystem, a VFS |
+| 9 | Storage + files ✅ | AHCI + NVMe drivers, a filesystem, a VFS |
+| 9b | Real-hardware input ✅ | xHCI USB: keyboards + mice (boot protocol), hot plug, works with no PS/2 controller |
 | 10 | Nova shell | First real Nova user interface running on Nova itself |
 
-Later: USB (xHCI), networking, GPU, real-hardware testing on a USB stick.
+Later: USB hubs and storage, networking, GPU, real-hardware testing on a USB stick.
+
+## NVMe + USB notes (after stage 9, before stage 10)
+
+* **NVMe** (`kernel/src/nvme.rs`, logic in `crates/nvme`, 9 host tests): resets the controller, admin
+  queue pair, IDENTIFY controller / active namespace list / namespace, one I/O queue pair (64 entries,
+  physically contiguous, interrupts off, polled by phase bit, timeouts, fatal-status check). Namespaces
+  with 512 B or 4 KiB blocks and no metadata become disks; a 4 KiB file-system block is one PRP page.
+  `reboot`/`halt` send the NVMe shutdown notification after syncing. Disks are numbered SATA first,
+  then NVMe (`files::Disk` hides which driver a disk uses). Tests: storage phases 1 + 2 on the NVMe
+  disk, with 512 B and with 4 KiB sectors.
+* **xHCI** (`kernel/src/xhci.rs`, logic in `crates/usb`, 25 host tests): BIOS handoff (USB Legacy
+  Support capability, SMIs off), Supported Protocol capability tells USB 2 from USB 3 ports, halt +
+  reset, device-context array + scratchpad pages, command ring, one event-ring segment, 32-bit-DMA
+  controllers respected. Per device: port reset (USB 2), Enable Slot, Address Device, endpoint-0 packet
+  size from the first 8 bytes of the device descriptor (Evaluate Context), device/config/string
+  descriptors, Set Configuration, SET_PROTOCOL(boot), SET_IDLE, Configure Endpoint with interrupt-IN
+  endpoints, 8 transfers kept queued. Stalls/errors: Reset Endpoint + Set TR Dequeue. Polled: during
+  start-up and from the `usb` thread every 10 ms (no MSI yet). Port Status Change events attach and
+  detach devices (held keys are released on unplug).
+* **Input:** keyboard reports become PS/2 set 1 scancodes into a per-keyboard `nova_kbd::Pipeline`
+  (so layout and modifiers are shared code); USB keyboards don't repeat keys themselves, so
+  `crates/usb` does typematic repeat (500 ms, then ~30/s). Mouse reports go into the PS/2 mouse queue.
+  The shell starts if there is a PS/2 keyboard *or* a USB controller (a keyboard may be plugged later).
+  The ISO key next to left Shift (`\ |`) was missing from the layout; added.
+* **Tests:** `boot_test.py --usb` plugs QEMU's usb-kbd + usb-mouse in (QEMU then routes input to them),
+  runs the mouse + shell (+ user program) tests through them, checks the `usb` command, then unplugs and
+  replugs the keyboard over QMP and types again. `--no-ps2` boots a q35 with `i8042=off`: USB is the only
+  input. Also at 6 GiB (DMA buffers may sit above 4 GiB).
+* Gaps: **hubs** (a device behind a hub is reported and ignored; desktop front panels, docks and some
+  laptops' internal ports use hubs), USB mass storage, report-protocol HID (gaming mice, keyboards
+  without a boot interface), interrupts/MSI for both drivers, more than one NVMe I/O queue, NVMe
+  namespaces with metadata, PRP lists (transfers > 4 KiB), both drivers untried on real hardware.
 
 ## Stage 9 notes
 

@@ -173,10 +173,11 @@ ps              list running user processes
 Files:
 pwd, cd [DIR], ls [DIR], cat FILE, write FILE TEXT, mkdir DIR, rm PATH,
 stat PATH, cp SRC DST    work on the file system (paths may be relative)
-disks           the disks found; mounts / df: mounted file systems
+disks           the disks found (SATA, NVMe); mounts / df: mounted file systems
 format DISK erase   create a NovaFS on a disk (DESTROYS the disk)
 install         copy the built-in programs to /bin on the disk
 fscheck         check the disk's file system; sync: write everything out
+usb             USB keyboards and mice attached
 version         kernel version
 panic           deliberately crash the kernel (shows the panic screen)
 reboot          restart the machine
@@ -361,9 +362,9 @@ fn execute(line: &str) {
             if list.is_empty() {
                 outln("no disks found");
             }
-            for (i, model, sectors) in list {
+            for (i, model, bytes, bus) in list {
                 let root = if files::root_disk() == Some(i) { "  (holds /)" } else { "" };
-                outln(&alloc::format!("  disk {i}: {model}, {} MiB{root}", (sectors * 512) >> 20));
+                outln(&alloc::format!("  disk {i}: {model}, {} MiB, {bus}{root}", bytes >> 20));
             }
         }
         "format" => {
@@ -417,14 +418,23 @@ fn execute(line: &str) {
         },
         "version" => outln(&alloc::format!("Nova kernel {} (x86_64, {} CPUs)", env!("CARGO_PKG_VERSION"), cpu::online_count())),
         "panic" => panic!("the 'panic' shell command was run"),
+        "usb" => {
+            let lines = crate::xhci::describe();
+            if lines.is_empty() {
+                outln("no USB controller found");
+            }
+            for l in lines {
+                outln(&l);
+            }
+        }
         "reboot" => {
-            let _ = files::sync();
+            files::shutdown();
             outln("restarting...");
             ps2::reset_cpu();
             errln("the keyboard controller did not reset the machine");
         }
         "halt" => {
-            let _ = files::sync();
+            files::shutdown();
             outln("halted.");
             crate::smp::halt_other_cpus();
             nova_x86::halt_forever();

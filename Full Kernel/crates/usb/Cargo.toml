@@ -1,0 +1,12 @@
+[package]
+name = "nova-usb"
+description = "xHCI rings, TRBs and device contexts, USB descriptor parsing and HID boot keyboard/mouse reports (pure logic)."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+nova-ps2 = { path = "../ps2" }
+
+[dev-dependencies]
+nova-kbd = { path = "../kbd" }

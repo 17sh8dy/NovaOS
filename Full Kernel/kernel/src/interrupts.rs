@@ -86,3 +86,22 @@ pub fn stray_count() -> u32 {
 pub fn spurious_count() -> u32 {
     SPURIOUS.load(Ordering::Relaxed)
 }
+
+/// Spins until `cond` holds or about `ms` milliseconds have passed (device
+/// drivers waiting on hardware). Returns whether `cond` came true.
+pub fn wait_until(ms: u64, mut cond: impl FnMut() -> bool) -> bool {
+    let wait = (ms * TICK_HZ as u64).div_ceil(1000).max(1);
+    let deadline = ticks() + wait;
+    let mut spins = 0u64;
+    loop {
+        if cond() {
+            return true;
+        }
+        spins += 1;
+        // Without timer ticks (very early boot) fall back to a spin count.
+        if ticks() >= deadline && spins > 1000 || spins > 200_000_000 {
+            return false;
+        }
+        core::hint::spin_loop();
+    }
+}

@@ -142,6 +142,20 @@ pub fn pump() {
     }
 }
 
+/// Typed input from another keyboard (USB): queued for the shell like PS/2 keys.
+pub fn push_typed(input: Input) {
+    push_key(input);
+    let w = KEY_WAITER.load(Ordering::SeqCst);
+    if w != usize::MAX {
+        crate::sched::unpark(w);
+    }
+}
+
+/// Movement from another mouse (USB): queued for the desktop like PS/2 packets.
+pub fn push_mouse(ev: MouseEvent) {
+    QUEUE.with(|q| q.push(ev));
+}
+
 /// The IRQ 1 / IRQ 12 handler.
 pub fn irq_handler() {
     pump();

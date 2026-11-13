@@ -24,3 +24,5 @@ nova-kbd = { path = "../crates/kbd" }
 nova-console = { path = "../crates/console" }
 nova-elf = { path = "../crates/elf" }
 nova-fs = { path = "../crates/fs" }
+nova-nvme = { path = "../crates/nvme" }
+nova-usb = { path = "../crates/usb" }

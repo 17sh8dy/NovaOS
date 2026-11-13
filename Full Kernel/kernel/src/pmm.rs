@@ -87,6 +87,19 @@ pub fn free_contiguous(addr: u64, count: usize) -> Result<(), FreeError> {
     PMM.with(|p| p.as_mut().ok_or(FreeError::OutOfRange)?.free_contiguous(addr, count))
 }
 
+/// A zeroed frame for a device to DMA to/from. `below_4g`: the device can only
+/// address 32 bits. Returns the physical address.
+pub fn alloc_dma_frame(below_4g: bool) -> Option<u64> {
+    let f = alloc_frame()?;
+    if below_4g && f >= 1 << 32 {
+        let _ = free_frame(f);
+        return None;
+    }
+    // SAFETY: a frame we own, in the direct map.
+    unsafe { core::ptr::write_bytes(frame_ptr(f) as *mut u8, 0, FRAME_SIZE as usize) };
+    Some(f)
+}
+
 /// Direct-map pointer to the frame at physical address `phys`.
 pub fn frame_ptr(phys: u64) -> *mut u64 {
     (DIRECT_MAP.load(Ordering::SeqCst) + phys) as *mut u64

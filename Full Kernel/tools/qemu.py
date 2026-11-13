@@ -58,18 +58,25 @@ def accel() -> str:
 
 
 DISK = BUILD / "disk.img"
+NVME = BUILD / "nvme.img"
 DISK_MIB = 64
 
 
 def ensure_disk(fresh: bool = False) -> Path:
-    """The virtual SATA disk Nova can format and keep files on (a sparse 64 MiB file).
-    `fresh` throws away its contents (a blank disk)."""
+    """The virtual disks Nova can format and keep files on (sparse 64 MiB files):
+    disk.img is a SATA disk, nvme.img an NVMe SSD. `fresh` blanks both."""
     BUILD.mkdir(parents=True, exist_ok=True)
-    if fresh or not DISK.exists():
-        DISK.unlink(missing_ok=True)
-        with open(DISK, "wb") as f:
-            f.truncate(DISK_MIB << 20)
+    for img in (DISK, NVME):
+        if fresh or not img.exists():
+            img.unlink(missing_ok=True)
+            with open(img, "wb") as f:
+                f.truncate(DISK_MIB << 20)
     return DISK
+
+
+def usb_default() -> bool:
+    """Plug a USB keyboard + mouse in (NOVA_USB=1)."""
+    return os.environ.get("NOVA_USB", "0") not in ("", "0")
 
 
 def default_cpus() -> int:
@@ -77,7 +84,7 @@ def default_cpus() -> int:
     return int(os.environ.get("NOVA_CPUS", "4"))
 
 
-def base_args(qemu: Path, memory: str = "256M", cpus: int | None = None) -> list[str]:
+def base_args(qemu: Path, memory: str = "256M", cpus: int | None = None, usb: bool | None = None, nvme_block: int = 512, ps2: bool = True) -> list[str]:
     """QEMU arguments. Paths are relative to BUILD, which must be the cwd
     (QEMU's -drive syntax can't take a path with ',' and the vvfat driver is
     simplest with a relative directory)."""
@@ -85,9 +92,11 @@ def base_args(qemu: Path, memory: str = "256M", cpus: int | None = None) -> list
         raise SystemExit("build/esp is missing; run tools/build.ps1 first")
     firmware(qemu)
     ensure_disk()
-    return [
+    if usb is None:
+        usb = usb_default()
+    args = [
         str(qemu),
-        "-machine", "q35",
+        "-machine", "q35" if ps2 else "q35,i8042=off",
         "-accel", accel(),
         "-m", memory,
         "-smp", str(cpus or default_cpus()),
@@ -97,6 +106,16 @@ def base_args(qemu: Path, memory: str = "256M", cpus: int | None = None) -> list
         # A second SATA disk for Nova's own file system (the boot volume above is the first).
         "-drive", "if=none,id=nova0,format=raw,file=disk.img",
         "-device", "ide-hd,drive=nova0,bus=ide.1",
+        # An NVMe SSD (what most real PCs have).
+        "-drive", "if=none,id=nvme0,format=raw,file=nvme.img",
+        "-device", f"nvme,serial=NOVA0001,drive=nvme0,logical_block_size={nvme_block},physical_block_size={nvme_block}",
+        # A USB 3 (xHCI) controller, always there; keyboard + mouse on request.
+        "-device", "qemu-xhci,id=xhci",
         "-nic", "none",
         "-no-reboot",
     ]
+    if usb:
+        # With these attached, QEMU sends its keyboard/mouse input to the USB
+        # devices instead of PS/2.
+        args += ["-device", "usb-kbd,bus=xhci.0,id=usbkbd", "-device", "usb-mouse,bus=xhci.0,id=usbmouse"]
+    return args

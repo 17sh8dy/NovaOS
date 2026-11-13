@@ -1,0 +1,6 @@
+[package]
+name = "nova-nvme"
+description = "NVM Express command encoding, queue bookkeeping and IDENTIFY parsing (pure logic)."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true

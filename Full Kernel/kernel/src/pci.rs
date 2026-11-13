@@ -116,3 +116,34 @@ pub fn enable_dma(d: &PciDevice) {
     let cmd = read32(d.bus, d.device, d.function, 0x04);
     write32(d.bus, d.device, d.function, 0x04, (cmd | 0x6) & 0xFFFF); // memory space + bus master
 }
+
+/// Stops the device raising legacy (INTx) interrupts; drivers that poll use this.
+pub fn disable_intx(d: &PciDevice) {
+    let cmd = read32(d.bus, d.device, d.function, 0x04);
+    write32(d.bus, d.device, d.function, 0x04, (cmd | 1 << 10) & 0xFFFF);
+}
+
+/// Base and size of memory BAR `index` (sized the standard way: decoding off,
+/// write all ones, read back the mask, restore).
+pub fn bar_memory_size(d: &PciDevice, index: u8) -> Option<(u64, u64)> {
+    let base = bar_memory(d, index)?;
+    let off = 0x10 + index * 4;
+    let lo = read32(d.bus, d.device, d.function, off);
+    let wide = (lo >> 1) & 3 == 2;
+    let hi = if wide { read32(d.bus, d.device, d.function, off + 4) } else { 0 };
+    let cmd = read32(d.bus, d.device, d.function, 0x04);
+    write32(d.bus, d.device, d.function, 0x04, cmd & 0xFFFF & !0x2); // memory decoding off
+    write32(d.bus, d.device, d.function, off, !0);
+    let mut mask = (read32(d.bus, d.device, d.function, off) & !0xF) as u64;
+    write32(d.bus, d.device, d.function, off, lo);
+    if wide {
+        write32(d.bus, d.device, d.function, off + 4, !0);
+        mask |= (read32(d.bus, d.device, d.function, off + 4) as u64) << 32;
+        write32(d.bus, d.device, d.function, off + 4, hi);
+    } else {
+        mask |= 0xFFFF_FFFF_0000_0000;
+    }
+    write32(d.bus, d.device, d.function, 0x04, cmd & 0xFFFF);
+    let size = (!mask).wrapping_add(1);
+    (size != 0).then_some((base, size))
+}

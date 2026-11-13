@@ -89,22 +89,8 @@ fn wr(base: u64, off: usize, v: u32) {
     unsafe { ((base + off as u64) as *mut u32).write_volatile(v) }
 }
 
-/// Spins until `cond` holds or about `ms` milliseconds have passed.
-fn wait_until(ms: u64, mut cond: impl FnMut() -> bool) -> bool {
-    let ticks = (ms * interrupts::TICK_HZ as u64).div_ceil(1000).max(1);
-    let deadline = interrupts::ticks() + ticks;
-    let mut spins = 0u64;
-    loop {
-        if cond() {
-            return true;
-        }
-        spins += 1;
-        // Without timer ticks (very early boot) fall back to a spin count.
-        if interrupts::ticks() >= deadline && spins > 1000 || spins > 200_000_000 {
-            return false;
-        }
-        core::hint::spin_loop();
-    }
+fn wait_until(ms: u64, cond: impl FnMut() -> bool) -> bool {
+    interrupts::wait_until(ms, cond)
 }
 
 impl Port {

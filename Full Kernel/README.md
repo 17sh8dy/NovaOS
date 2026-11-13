@@ -53,12 +53,18 @@ through system calls, and are killed (not the kernel) when they misbehave. In th
 `run hello`, `run greet`, `spawn counter counter`, `run crash`, `run evil`. User programs are built by
 `tools\build_user.ps1` (called by `build.ps1`) into `kernel\user_bin`, which is git-ignored.
 
-**Stage 9: storage + files — done (SATA/AHCI; NVMe not yet).** Nova finds its disks over PCI, has its own
-file system (NovaFS) with a VFS, and keeps files across reboots. `run.ps1` gives the virtual machine a
-second, blank 64 MiB SATA disk (`build\disk.img`). In the shell: `disks`, `format 1 erase` (DESTROYS that
-disk), `install` (copies the programs to `/bin`), `write /docs/a.txt hi`, `cat`, `ls`, `mkdir`, `rm`,
-`fscheck`, `run /bin/hello`. After the next boot the disk mounts itself. **Never run `format` on a real
-PC's disk unless you mean to erase it.**
+**Stage 9: storage + files — done.** Nova finds its disks over PCI (SATA through AHCI, and **NVMe** SSDs),
+has its own file system (NovaFS) with a VFS, and keeps files across reboots. `run.ps1` gives the virtual
+machine two blank 64 MiB disks: a SATA disk (`build\disk.img`, disk 1) and an NVMe SSD (`build\nvme.img`,
+disk 2). In the shell: `disks`, `format 1 erase` (DESTROYS that disk), `install` (copies the programs to
+`/bin`), `write /docs/a.txt hi`, `cat`, `ls`, `mkdir`, `rm`, `fscheck`, `run /bin/hello`. After the next
+boot the disk mounts itself. **Never run `format` on a real PC's disk unless you mean to erase it.**
+
+**USB keyboards and mice — done (xHCI).** Nova takes the USB 3 controller over from the firmware and
+drives USB keyboards and mice itself, so a machine with no PS/2 port (most laptops) still has a
+keyboard and pointer. Plugging and unplugging works while Nova runs. `.\tools\run.ps1 -Usb` plugs a
+virtual USB keyboard and mouse in (QEMU then sends your typing to them instead of PS/2); `usb` in the
+shell lists what is attached. Not yet: USB hubs, USB sticks, and non-boot-protocol HID devices.
 
 Next stages are in [docs/ROADMAP.md](docs/ROADMAP.md).
 
@@ -77,6 +83,8 @@ Next stages are in [docs/ROADMAP.md](docs/ROADMAP.md).
 | `crates/apic` | Local APIC / IO-APIC register encodings, timer maths |
 | `user/` | The user-space runtime and programs (`user/src/bin`) |
 | `crates/fs` | NovaFS (on-disk file system) + fsck, RAM file system, VFS |
+| `crates/nvme` | NVMe commands, queue bookkeeping, IDENTIFY parsing |
+| `crates/usb` | xHCI rings/TRBs/contexts, USB descriptors, HID boot keyboard + mouse reports |
 | `crates/kbd` | Keyboard scancode decoding, US layout, modifiers |
 | `crates/console` | Text grid (scrolling, dirty rows) + line editor |
 | `crates/ps2` | PS/2 mouse packet decoder + pointer tracking |
@@ -95,11 +103,12 @@ Next stages are in [docs/ROADMAP.md](docs/ROADMAP.md).
 ```powershell
 .\tools\build.ps1     # build -> build\esp  (the boot volume)
 .\tools\run.ps1       # build + boot in a QEMU window; the kernel log prints here
-.\tools\test.ps1      # everything: unit tests, clippy, build, 3 headless boots
+.\tools\test.ps1      # everything: unit tests, clippy, build, ~30 headless boots
 python tools\boot_test.py --memory 6G   # one headless boot; screenshot -> build\boot_test.png
 ```
 
-`run.ps1 -Memory 2G` changes guest RAM; `-NoBuild` boots the existing build.
+`run.ps1 -Memory 2G` changes guest RAM; `-NoBuild` boots the existing build; `-Usb` adds a USB
+keyboard + mouse.
 
 ### See a crash screen on purpose
 
@@ -122,7 +131,12 @@ boot takes ~1.3 s). To use TCG on another machine: `$env:NOVA_ACCEL = 'tcg'`.
 The contents of `build\esp` are a complete UEFI boot volume. Copy them to a
 FAT32 USB stick (`EFI\BOOT\BOOTX64.EFI` + `NOVA\KERNEL.ELF`), turn **Secure
 Boot off**, and boot from the stick. Output goes to the screen and to COM1.
-This has only been run in QEMU so far.
+This has only been run in QEMU so far. What a real PC needs that QEMU tests:
+an NVMe SSD (done), USB keyboard/mouse with no PS/2 port (done, tested in QEMU
+with the PS/2 controller switched off). Not yet: keyboards behind a USB hub
+(many desktop front panels and docks), Wi-Fi/Ethernet, the GPU beyond the
+firmware framebuffer. Nova only *reads* a disk at boot (looking for a NovaFS);
+it writes to a disk only after `format N erase`.
 
 ## Rules
 

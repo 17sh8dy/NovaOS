@@ -11,7 +11,9 @@
 //! input and `hlt` idling. Also: a PS/2 mouse with an on-screen cursor.
 //! Stage 7: kernel threads, a preemptive scheduler, SMP.
 //! Stage 6: PS/2 keyboard, a scrolling text console and a shell thread.
-//! Next: user space (docs/ROADMAP.md).
+//! Stage 8: user space. Stage 9: PCI, SATA + NVMe disks, NovaFS.
+//! Real-hardware drivers: NVMe SSDs and USB (xHCI) keyboards and mice.
+//! Next: the Nova shell/UI (docs/ROADMAP.md).
 
 #![no_std]
 #![no_main]
@@ -34,6 +36,7 @@ mod heap;
 mod interrupts;
 mod kmutex;
 mod log;
+mod nvme;
 mod pci;
 mod pmm;
 mod process;
@@ -45,6 +48,7 @@ mod shell;
 mod smp;
 mod syscall;
 mod vm;
+mod xhci;
 
 use nova_bootinfo::{BootInfo, MemoryKind, total_of};
 use screen::Screen;
@@ -268,6 +272,7 @@ fn kmain(boot_copy: &'static BootInfo) -> ! {
         }
     };
 
+    let mut usb_input = false;
     if irq_mode {
         // Threads and the scheduler exist before interrupts come on, because
         // the timer tick drives them.
@@ -282,12 +287,30 @@ fn kmain(boot_copy: &'static BootInfo) -> ! {
         run_scheduler_tests();
         faults::run_late_if_requested();
 
-        // ---- Stage 9: storage and files ------------------------------------
-        files::init();
+        // ---- Devices on the PCI bus ------------------------------------------
+        let devices = pci::enumerate();
+        for d in &devices {
+            // Bridges and the like are noise; show the devices that matter for storage and I/O.
+            if matches!(d.class, 0x01 | 0x02 | 0x03 | 0x0C) {
+                kprintln!("pci: {} {:04x}:{:04x} {}", d.address(), d.vendor, d.device_id, d.class_name());
+            }
+        }
+
+        // ---- Stage 9: storage (SATA + NVMe) and files ----------------------
+        files::init(&devices);
+
+        // ---- USB keyboards and mice (xHCI) -----------------------------------
+        let usb = xhci::init(&devices);
+        if usb.controllers > 0 {
+            kprintln!("usb: {} controller(s), {} keyboard(s), {} mouse/mice at boot", usb.controllers, usb.keyboards, usb.mice);
+            xhci::start_service();
+        }
+        // A USB keyboard may be plugged in later, so a USB controller is enough for the shell.
+        usb_input = usb.controllers > 0;
 
         if have_gui {
             gui::set_cpus(cpu::online_count());
-            if keyboard {
+            if keyboard || usb_input {
                 if sched::spawn("shell", shell::run).is_none() {
                     kprintln!("shell: could not start");
                 }
@@ -300,7 +323,7 @@ fn kmain(boot_copy: &'static BootInfo) -> ! {
     }
 
     kprintln!("{READY_MARKER}");
-    if have_gui && (mouse || keyboard) {
+    if have_gui && (mouse || keyboard || usb_input) {
         desktop(irq_mode)
     } else {
         nova_x86::halt_forever()
