@@ -179,9 +179,36 @@ pub fn init(screen: Screen, info: &BootInfo, free_mib: u64, cpus: usize) {
     };
     let (px, py) = (gui.pointer.x, gui.pointer.y);
     gui.desk.pointer_moved(px, py);
+    // The boot log so far, then every new line, in the Terminal until the shell starts.
+    crate::log::recent(|l| {
+        gui.grid.set_color(COLOR_DIM);
+        gui.grid.write_str(l);
+        gui.grid.write_str("\n");
+    });
+    gui.grid.set_color(COLOR_TEXT);
     gui.render_console();
     gui.flush();
     GUI.with(|g| *g = Some(gui));
+    crate::log::set_mirror(Some(boot_line));
+}
+
+/// A log line during boot, shown in the Terminal. Runs inside the log's lock:
+/// gives up rather than wait if the GUI is busy.
+fn boot_line(text: &str) {
+    GUI.try_with(|g| {
+        let Some(g) = g.as_mut() else { return };
+        g.grid.set_color(COLOR_DIM);
+        g.grid.write_str(text);
+        g.grid.write_str("\n");
+        g.grid.set_color(COLOR_TEXT);
+        g.render_console();
+        g.flush();
+    });
+}
+
+/// The shell is starting: stop showing log lines in the Terminal.
+pub fn end_boot_log() {
+    crate::log::set_mirror(None);
 }
 
 /// Runs `f` on the GUI, then composes and presents what it changed.

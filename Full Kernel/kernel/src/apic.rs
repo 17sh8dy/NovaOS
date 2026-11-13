@@ -5,17 +5,48 @@
 //! (host-tested); this file does the MMIO. Only the boot CPU is used until
 //! stage 7. The PIT (a fixed-rate legacy timer present on every PC) is used
 //! once, to measure how fast the APIC timer runs.
+//!
+//! **xAPIC or x2APIC:** the local APIC's registers are either a memory page
+//! (xAPIC) or MSRs (x2APIC). Firmware on big machines often hands over in
+//! x2APIC mode, where the memory page no longer works, so the kernel uses
+//! whichever mode it finds (every CPU is put in the boot CPU's mode). A test
+//! kernel built with `NOVA_X2APIC=1` switches to x2APIC itself, so QEMU
+//! exercises that path too.
 
 use crate::interrupts::{self, TICK_HZ, VECTOR_SPURIOUS, VECTOR_TIMER};
 use crate::log::SpinLock;
 use crate::vm;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use nova_acpi::Madt;
-use nova_apic::{APIC_BASE_ENABLE, MSR_APIC_BASE, Redirection, TimerMode, icr, ioapic, lapic};
+use nova_apic::{APIC_BASE_X2APIC, MSR_APIC_BASE, Redirection, TimerMode, icr, ioapic, lapic};
 use nova_x86::{inb, outb, rdmsr, wrmsr};
 
-/// Virtual address of the local APIC registers (0 until `init`).
+/// Virtual address of the local APIC registers (0 until `init`; unused in x2APIC mode).
 static LAPIC: AtomicU64 = AtomicU64::new(0);
+/// The local APIC is ready (`eoi` may touch it).
+static READY: AtomicBool = AtomicBool::new(false);
+/// Registers are MSRs (x2APIC) rather than memory (xAPIC).
+static X2APIC: AtomicBool = AtomicBool::new(false);
+
+pub fn is_x2apic() -> bool {
+    X2APIC.load(Ordering::Relaxed)
+}
+
+/// Puts this CPU's local APIC in the wanted mode (only legal transitions).
+fn set_mode(x2apic: bool) {
+    // SAFETY: IA32_APIC_BASE exists on every CPU with an APIC; mode_switch only produces legal steps.
+    unsafe {
+        let (steps, n) = nova_apic::mode_switch(rdmsr(MSR_APIC_BASE), x2apic);
+        for &v in &steps[..n] {
+            wrmsr(MSR_APIC_BASE, v);
+        }
+    }
+}
+
+/// CPUID.1:ECX bit 21: the CPU can do x2APIC.
+fn cpu_has_x2apic() -> bool {
+    nova_x86::cpuid(1, 0).2 & (1 << 21) != 0
+}
 /// The boot CPU's APIC id.
 static BSP_ID: AtomicU32 = AtomicU32::new(0);
 /// The timer's initial count (measured on the boot CPU, reused by the others).
@@ -41,12 +72,21 @@ pub struct Info {
 }
 
 fn lapic_read(reg: usize) -> u32 {
+    if is_x2apic() {
+        // SAFETY: in x2APIC mode every xAPIC register has its MSR.
+        return unsafe { rdmsr(nova_apic::x2apic_msr(reg)) } as u32;
+    }
     let base = LAPIC.load(Ordering::Relaxed);
     // SAFETY: `base` is the mapped local APIC page (set in `init`).
     unsafe { ((base + reg as u64) as *const u32).read_volatile() }
 }
 
 fn lapic_write(reg: usize, value: u32) {
+    if is_x2apic() {
+        // SAFETY: as above.
+        unsafe { wrmsr(nova_apic::x2apic_msr(reg), value as u64) };
+        return;
+    }
     let base = LAPIC.load(Ordering::Relaxed);
     // SAFETY: as above.
     unsafe { ((base + reg as u64) as *mut u32).write_volatile(value) }
@@ -54,7 +94,7 @@ fn lapic_write(reg: usize, value: u32) {
 
 /// Signals end-of-interrupt to the local APIC.
 pub fn eoi() {
-    if LAPIC.load(Ordering::Relaxed) == 0 {
+    if !READY.load(Ordering::Relaxed) {
         return; // no APIC yet (an interrupt before init): nothing to acknowledge
     }
     lapic_write(lapic::EOI, 0);
@@ -108,21 +148,32 @@ fn disable_legacy_pic() {
 pub unsafe fn init(madt: Madt) -> Result<Info, &'static str> {
     disable_legacy_pic();
 
-    // Local APIC: make sure it is on, map it, enable it with our spurious vector.
+    // Local APIC: keep the mode the firmware chose (x2APIC if it switched),
+    // make sure it is on, and enable it with our spurious vector.
     // SAFETY: standard MSR on every CPU with an APIC.
-    unsafe {
-        let base = rdmsr(MSR_APIC_BASE);
-        if base & APIC_BASE_ENABLE == 0 {
-            wrmsr(MSR_APIC_BASE, base | APIC_BASE_ENABLE);
-        }
+    let firmware_x2 = unsafe { rdmsr(MSR_APIC_BASE) } & APIC_BASE_X2APIC != 0;
+    let forced = option_env!("NOVA_X2APIC").is_some_and(|v| v == "1");
+    let x2 = firmware_x2 || (forced && cpu_has_x2apic());
+    if forced && !x2 {
+        crate::kprintln!("apic: x2APIC was requested, but this CPU does not support it; using xAPIC");
     }
-    let virt = vm::map_mmio(madt.lapic_addr, 0x1000).map_err(|_| "could not map the local APIC")?;
-    LAPIC.store(virt, Ordering::SeqCst);
+    set_mode(x2);
+    X2APIC.store(x2, Ordering::SeqCst);
+    if !x2 {
+        let virt = vm::map_mmio(madt.lapic_addr, 0x1000).map_err(|_| "could not map the local APIC")?;
+        LAPIC.store(virt, Ordering::SeqCst);
+    }
+    READY.store(true, Ordering::SeqCst);
+    crate::kprintln!(
+        "apic: local APIC in {} mode{}",
+        if x2 { "x2APIC (MSR)" } else { "xAPIC (MMIO)" },
+        if firmware_x2 { ", as the firmware left it" } else if x2 { ", switched on by this test kernel" } else { "" }
+    );
     lapic_write(lapic::TPR, 0); // accept every priority
     lapic_write(lapic::LVT_LINT0, lapic::LVT_MASKED); // the legacy PIC "virtual wire": off
     lapic_write(lapic::LVT_ERROR, lapic::LVT_MASKED);
     lapic_write(lapic::SPURIOUS, lapic::SPURIOUS_ENABLE | VECTOR_SPURIOUS as u32);
-    let apic_id = lapic_read(lapic::ID) >> 24;
+    let apic_id = this_apic_id();
     BSP_ID.store(apic_id, Ordering::SeqCst);
     crate::cpu::set_bsp_apic_id(apic_id);
 
@@ -210,7 +261,7 @@ pub fn start_timer() -> Result<u64, &'static str> {
 
 /// This CPU's local APIC id.
 pub fn this_apic_id() -> u32 {
-    lapic_read(lapic::ID) >> 24
+    if is_x2apic() { lapic_read(lapic::ID) } else { lapic_read(lapic::ID) >> 24 }
 }
 
 /// The processors the firmware says exist.
@@ -221,13 +272,8 @@ pub fn cpu_list() -> alloc::vec::Vec<nova_acpi::Cpu> {
 /// Brings up the local APIC on an application processor (the boot CPU's
 /// register mapping is shared: every CPU sees its own APIC at the same address).
 pub fn init_ap() {
-    // SAFETY: standard MSR on every CPU with an APIC.
-    unsafe {
-        let base = rdmsr(MSR_APIC_BASE);
-        if base & APIC_BASE_ENABLE == 0 {
-            wrmsr(MSR_APIC_BASE, base | APIC_BASE_ENABLE);
-        }
-    }
+    // Same mode as the boot CPU.
+    set_mode(is_x2apic());
     lapic_write(lapic::TPR, 0);
     lapic_write(lapic::LVT_LINT0, lapic::LVT_MASKED);
     lapic_write(lapic::LVT_ERROR, lapic::LVT_MASKED);
@@ -244,6 +290,12 @@ pub fn start_timer_ap() {
 /// Sends an inter-processor interrupt. Returns false if the APIC never
 /// reported it delivered.
 fn send_ipi(dest_apic_id: u32, low: u32) -> bool {
+    if is_x2apic() {
+        // One 64-bit write sends it; x2APIC has no "still sending" bit to wait on.
+        // SAFETY: the x2APIC interrupt command register.
+        unsafe { wrmsr(nova_apic::X2APIC_ICR, nova_apic::x2apic_icr(dest_apic_id, low)) };
+        return true;
+    }
     let busy = || lapic_read(icr::LOW) & icr::PENDING != 0;
     for _ in 0..1_000_000 {
         if !busy() {

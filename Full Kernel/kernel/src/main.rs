@@ -25,6 +25,7 @@ mod acpi;
 mod ahci;
 mod apic;
 mod bootdata;
+mod bootlog;
 mod cpu;
 mod crash;
 mod desktop;
@@ -126,6 +127,14 @@ fn mib(bytes: u64) -> u64 {
 fn kmain(boot_copy: &'static BootInfo) -> ! {
     let info = bootdata::info();
     let map = bootdata::memory_map();
+    // The screen first: the crash screen and the on-screen boot log need nothing
+    // else (the framebuffer is in the direct map from the bootloader on).
+    if info.framebuffer.is_present() {
+        crash::set_framebuffer(info.framebuffer, info.phys_to_virt(info.framebuffer.addr));
+        // SAFETY: the bootloader mapped the framebuffer at its direct-map address;
+        // nothing else draws until the desktop starts (which stops the boot log).
+        unsafe { bootlog::start(info.framebuffer, info.phys_to_virt(info.framebuffer.addr)) };
+    }
     let vendor = nova_x86::cpu_vendor();
     kprintln!("cpu: {}", core::str::from_utf8(&vendor).unwrap_or("unknown"));
     kprintln!(
@@ -226,7 +235,7 @@ fn kmain(boot_copy: &'static BootInfo) -> ! {
     let mut have_gui = false;
     if fb.is_present() {
         kprintln!("framebuffer: {}x{}, stride {}, at {:#x} (write-combining)", fb.width, fb.height, fb.stride, fb.addr);
-        crash::set_framebuffer(fb, info.phys_to_virt(fb.addr));
+        bootlog::stop();
         // SAFETY: the framebuffer is mapped by vm::init at its direct-map
         // address and only the kernel draws to it (through gui.rs from here on).
         let s = unsafe { Screen::new(fb, info.phys_to_virt(fb.addr)) };

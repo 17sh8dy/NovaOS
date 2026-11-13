@@ -33,6 +33,36 @@ pub mod lapic {
 pub const MSR_APIC_BASE: u32 = 0x1B;
 pub const APIC_BASE_ENABLE: u64 = 1 << 11;
 pub const APIC_BASE_ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
+/// x2APIC mode: registers are MSRs instead of memory (bit 10, "EXTD").
+pub const APIC_BASE_X2APIC: u64 = 1 << 10;
+
+/// x2APIC: each 16-byte-spaced xAPIC register becomes MSR 0x800 + offset/16.
+pub const fn x2apic_msr(reg: usize) -> u32 {
+    0x800 + (reg as u32 >> 4)
+}
+
+/// x2APIC: the interrupt command register is one 64-bit MSR, destination in the high half.
+pub const X2APIC_ICR: u32 = 0x830;
+
+pub const fn x2apic_icr(dest_apic_id: u32, low: u32) -> u64 {
+    (dest_apic_id as u64) << 32 | low as u64
+}
+
+/// The steps (values for IA32_APIC_BASE, in order) to get from `base` to the
+/// wanted mode. Only disabled -> xAPIC -> x2APIC and x2APIC -> disabled are
+/// legal moves, so some changes take two writes. Count 0: already there.
+pub fn mode_switch(base: u64, x2apic: bool) -> ([u64; 2], usize) {
+    let enabled = base & APIC_BASE_ENABLE != 0;
+    let is_x2 = base & APIC_BASE_X2APIC != 0;
+    let off = base & !(APIC_BASE_ENABLE | APIC_BASE_X2APIC);
+    match (x2apic, enabled, is_x2) {
+        (true, true, true) | (false, true, false) => ([0; 2], 0),
+        (true, true, false) => ([off | APIC_BASE_ENABLE | APIC_BASE_X2APIC, 0], 1),
+        (true, false, _) => ([off | APIC_BASE_ENABLE, off | APIC_BASE_ENABLE | APIC_BASE_X2APIC], 2),
+        (false, true, true) => ([off, off | APIC_BASE_ENABLE], 2),
+        (false, false, _) => ([off | APIC_BASE_ENABLE, 0], 1),
+    }
+}
 
 /// How the local APIC timer counts.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -187,6 +217,35 @@ mod tests {
         assert_eq!(icr::destination(3), 0x0300_0000);
         assert_eq!(icr::NMI_ALL_BUT_SELF, 0xC4400);
         assert_eq!(icr::fixed_all_but_self(0xFD), 0xC40FD);
+    }
+
+    #[test]
+    fn x2apic_register_numbers() {
+        assert_eq!(x2apic_msr(lapic::ID), 0x802);
+        assert_eq!(x2apic_msr(lapic::EOI), 0x80B);
+        assert_eq!(x2apic_msr(lapic::SPURIOUS), 0x80F);
+        assert_eq!(x2apic_msr(lapic::LVT_TIMER), 0x832);
+        assert_eq!(x2apic_msr(lapic::TIMER_CURRENT), 0x839);
+        assert_eq!(x2apic_msr(lapic::TIMER_DIVIDE), 0x83E);
+        assert_eq!(x2apic_msr(icr::LOW), X2APIC_ICR);
+        assert_eq!(x2apic_icr(300, icr::INIT), 300u64 << 32 | 0xC500);
+    }
+
+    #[test]
+    fn apic_mode_switches_use_only_legal_steps() {
+        let addr = 0xFEE0_0000u64;
+        let (e, x) = (APIC_BASE_ENABLE, APIC_BASE_X2APIC);
+        // Already in the wanted mode: nothing to do.
+        assert_eq!(mode_switch(addr | e, false).1, 0);
+        assert_eq!(mode_switch(addr | e | x, true).1, 0);
+        // xAPIC -> x2APIC: one write.
+        assert_eq!(mode_switch(addr | e, true), ([addr | e | x, 0], 1));
+        // disabled -> x2APIC: through xAPIC.
+        assert_eq!(mode_switch(addr, true), ([addr | e, addr | e | x], 2));
+        // x2APIC -> xAPIC: through disabled (keeping the base address and BSP flag).
+        let bsp = 1 << 8;
+        assert_eq!(mode_switch(addr | bsp | e | x, false), ([addr | bsp, addr | bsp | e], 2));
+        assert_eq!(mode_switch(addr, false), ([addr | e, 0], 1));
     }
 
     #[test]

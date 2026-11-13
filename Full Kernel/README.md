@@ -141,6 +141,11 @@ boot takes ~1.3 s). To use TCG on another machine: `$env:NOVA_ACCEL = 'tcg'`.
 
 ## Booting a real PC (not tried yet)
 
+**Read [docs/REAL-HARDWARE.md](docs/REAL-HARDWARE.md) first**: the safe plan (Secure Boot left on via shim +
+MOK, no firmware changes, no disk writes, a `-NoDisks` build, BitLocker recovery key first).
+Linux scripts: `tools/build.sh`, `tools/secureboot/` (make-key, make-stick, qemu-test).
+
+
 The contents of `build\esp` are a complete UEFI boot volume. Copy them to a
 FAT32 USB stick (`EFI\BOOT\BOOTX64.EFI` + `NOVA\KERNEL.ELF`), turn **Secure
 Boot off**, and boot from the stick. Output goes to the screen and to COM1.

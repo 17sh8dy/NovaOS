@@ -4,7 +4,7 @@
 //! INIT followed by a STARTUP interrupt, executing at a physical address
 //! below 1 MiB that the STARTUP names. So:
 //!
-//! 1. A small **trampoline** (below) is copied to physical `0x8000`. It walks
+//! 1. A small **trampoline** (below) is copied to a free page below 1 MiB (`0x8000` when free). It walks
 //!    the CPU up from real mode to protected mode to long mode, using a
 //!    temporary page table that identity-maps just that page and shares the
 //!    kernel's upper half.
@@ -19,9 +19,9 @@ use crate::{apic, cpu, pmm, sched, vm};
 use core::arch::global_asm;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-/// Physical address the trampoline is copied to (a STARTUP vector of 8).
-const TRAMPOLINE_PHYS: u64 = 0x8000;
-const TRAMPOLINE_PAGE: u8 = (TRAMPOLINE_PHYS >> 12) as u8;
+/// Where the trampoline would like to live (STARTUP vector 8). Any free page
+/// below 1 MiB works: the firmware's memory map decides (see [`trampoline_page`]).
+const PREFERRED_PAGE: u64 = 0x8000;
 
 global_asm!(
     r#"
@@ -33,6 +33,9 @@ global_asm!(
     .global nova_ap_stack
     .global nova_ap_index
     .global nova_ap_entry
+    .global nova_ap_fix_pm32
+    .global nova_ap_fix_lm64
+    .global nova_ap_fix_gdt
 
 nova_ap_tramp_start:
     .code16
@@ -40,13 +43,17 @@ nova_ap_tramp_start:
     cld
     mov ax, cs
     mov ds, ax
+    movzx ebx, ax
+    shl ebx, 4                    // ebx = where this page is (the base for all data below)
     lgdt [0x120]                  // nova_ap_gdt_desc (offset from the segment base)
     mov eax, cr0
     or eax, 1
     mov cr0, eax
-    // far jump (operand-size prefixed) to 32-bit protected mode: selector 0x08
+    // far jump (operand-size prefixed) to 32-bit protected mode: selector 0x08.
+    // The target is patched in when the page is copied (base + offset).
     .byte 0x66, 0xEA
-    .long nova_ap_pm32 - nova_ap_tramp_start + 0x8000
+nova_ap_fix_pm32:
+    .long nova_ap_pm32 - nova_ap_tramp_start
     .word 0x08
 
     .code32
@@ -58,7 +65,7 @@ nova_ap_pm32:
     mov eax, cr4
     or eax, 0x20                  // PAE
     mov cr4, eax
-    mov eax, [0x8140]             // nova_ap_cr3
+    mov eax, [ebx + 0x140]        // nova_ap_cr3
     mov cr3, eax
     mov ecx, 0xC0000080           // EFER
     rdmsr
@@ -69,7 +76,8 @@ nova_ap_pm32:
     mov cr0, eax
     // far jump to 64-bit code: selector 0x18
     .byte 0xEA
-    .long nova_ap_lm64 - nova_ap_tramp_start + 0x8000
+nova_ap_fix_lm64:
+    .long nova_ap_lm64 - nova_ap_tramp_start
     .word 0x18
 
     .code64
@@ -78,9 +86,10 @@ nova_ap_lm64:
     mov ds, ax
     mov es, ax
     mov ss, ax
-    mov rsp, [0x8148]             // nova_ap_stack
-    mov rdi, [0x8150]             // nova_ap_index
-    mov rax, [0x8158]             // nova_ap_entry
+    mov ebx, ebx                  // clear the upper half (undefined after the mode switch)
+    mov rsp, [rbx + 0x148]        // nova_ap_stack
+    mov rdi, [rbx + 0x150]        // nova_ap_index
+    mov rax, [rbx + 0x158]        // nova_ap_entry
     call rax
 2:
     cli
@@ -99,7 +108,8 @@ nova_ap_gdt:
     .org nova_ap_tramp_start + 0x120
 nova_ap_gdt_desc:
     .word 31
-    .long 0x8000 + 0x100
+nova_ap_fix_gdt:
+    .long 0x100                   // patched: base + 0x100
 
     .org nova_ap_tramp_start + 0x140
 nova_ap_cr3:    .quad 0
@@ -118,6 +128,31 @@ unsafe extern "C" {
     static nova_ap_stack: u8;
     static nova_ap_index: u8;
     static nova_ap_entry: u8;
+    static nova_ap_fix_pm32: u8;
+    static nova_ap_fix_lm64: u8;
+    static nova_ap_fix_gdt: u8;
+}
+
+/// A free page below 1 MiB for the trampoline: 0x8000 if the firmware's memory
+/// map says it is ordinary RAM, otherwise the first page that is. (Real
+/// firmware sometimes keeps bits of low memory for itself.) A test kernel can
+/// ask for a particular page with `NOVA_AP_PAGE=0xNN` (a page number).
+fn trampoline_page() -> Option<u64> {
+    use nova_bootinfo::MemoryKind;
+    let map = crate::bootdata::memory_map();
+    let free = |page: u64| {
+        map.iter().any(|r| {
+            matches!(r.kind(), MemoryKind::Usable | MemoryKind::FirmwareReclaimable) && r.start <= page && r.start + r.len >= page + 0x1000
+        })
+    };
+    if let Some(forced) = option_env!("NOVA_AP_PAGE").and_then(|v| u64::from_str_radix(v.trim_start_matches("0x"), 16).ok()) {
+        let page = forced << 12;
+        return ((0x1000..0x10_0000).contains(&page) && free(page)).then_some(page);
+    }
+    if free(PREFERRED_PAGE) {
+        return Some(PREFERRED_PAGE);
+    }
+    (1..0x100u64).map(|n| n << 12).find(|&p| free(p))
 }
 
 /// Set by an application processor as soon as it runs on the kernel's page
@@ -160,6 +195,16 @@ pub unsafe fn start_aps() -> Result<Started, &'static str> {
         return Err("more CPUs than the kernel supports");
     }
     let direct = crate::bootdata::info().physical_memory_offset;
+    let tramp = trampoline_page().ok_or("no free page below 1 MiB for the CPU start-up code")?;
+    let tramp_vector = (tramp >> 12) as u8;
+    let why = if option_env!("NOVA_AP_PAGE").is_some() {
+        " (placed there by this test kernel)"
+    } else if tramp == PREFERRED_PAGE {
+        ""
+    } else {
+        " (0x8000 is not free on this machine)"
+    };
+    crate::kprintln!("smp: start-up code at physical {tramp:#x}{why}");
 
     // The trampoline's temporary page tables must sit below 4 GiB (it loads CR3 in 32-bit mode).
     let low_frame = || -> Result<u64, &'static str> {
@@ -183,7 +228,7 @@ pub unsafe fn start_aps() -> Result<Started, &'static str> {
         new.write(pdpt | 3);
         ((direct + pdpt) as *mut u64).write(pd | 3);
         ((direct + pd) as *mut u64).write(pt | 3);
-        ((direct + pt) as *mut u64).add((TRAMPOLINE_PHYS >> 12) as usize).write(TRAMPOLINE_PHYS | 3);
+        ((direct + pt) as *mut u64).add((tramp >> 12) as usize).write(tramp | 3);
     }
 
     // Copy the trampoline to its low-memory home.
@@ -192,9 +237,15 @@ pub unsafe fn start_aps() -> Result<Started, &'static str> {
     if len > 4096 {
         return Err("the AP trampoline does not fit in one page");
     }
-    // SAFETY: physical page 8 is free low memory (the frame allocator never hands out < 1 MiB).
-    unsafe { core::ptr::copy_nonoverlapping(start as *const u8, (direct + TRAMPOLINE_PHYS) as *mut u8, len) };
-    let field = |sym: *const u8| (direct + TRAMPOLINE_PHYS + (sym as u64 - start)) as *mut u64;
+    // SAFETY: the memory map says this low page is free RAM (the frame allocator never hands out < 1 MiB).
+    unsafe { core::ptr::copy_nonoverlapping(start as *const u8, (direct + tramp) as *mut u8, len) };
+    let field = |sym: *const u8| (direct + tramp + (sym as u64 - start)) as *mut u64;
+    // The three absolute addresses in it: add where the page actually is.
+    for fix in [&raw const nova_ap_fix_pm32, &raw const nova_ap_fix_lm64, &raw const nova_ap_fix_gdt] {
+        let at = field(fix) as *mut u32;
+        // SAFETY: each fix-up is a 4-byte field inside the copied page.
+        unsafe { at.write_unaligned(at.read_unaligned() + tramp as u32) };
+    }
 
     for (n, ap) in aps.iter().enumerate() {
         let index = n + 1;
@@ -211,10 +262,10 @@ pub unsafe fn start_aps() -> Result<Started, &'static str> {
         }
         apic::send_init(ap.apic_id);
         apic::pit_wait_ms(10);
-        apic::send_startup(ap.apic_id, TRAMPOLINE_PAGE);
+        apic::send_startup(ap.apic_id, tramp_vector);
         apic::pit_wait_ms(2);
         if AP_ALIVE.load(Ordering::SeqCst) != index {
-            apic::send_startup(ap.apic_id, TRAMPOLINE_PAGE); // the second STARTUP the spec asks for
+            apic::send_startup(ap.apic_id, tramp_vector); // the second STARTUP the spec asks for
         }
         // Wait (up to ~1 s) for it to reach the kernel and report in.
         let mut waited = 0;
@@ -248,12 +299,13 @@ extern "sysv64" fn ap_main(index: u64) -> ! {
     unsafe { nova_x86::write_cr3(vm::root()) };
     AP_ALIVE.store(index as usize, Ordering::SeqCst);
 
+    // The APIC first: in x2APIC mode this CPU must switch before it can even read its id.
+    apic::init_ap();
     let apic_id = apic::this_apic_id();
     // SAFETY: first code on this CPU, interrupts are off, the heap works.
     let me = unsafe { cpu::init_ap(index as usize, apic_id) };
     // SAFETY: this CPU's tables are loaded; the stub is the kernel's SYSCALL entry.
     unsafe { cpu::enable_syscall(crate::syscall::entry_address()) };
-    apic::init_ap();
     sched::init_ap();
     apic::start_timer_ap();
     me.online.store(true, Ordering::SeqCst);

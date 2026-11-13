@@ -47,7 +47,8 @@ try {
         @{ Kind = 'nx';    Expect = @('#PF page fault', 'instruction fetch') },
         @{ Kind = 'stray'; Expect = @('irq: stray interrupt on vector 0x81', 'NOVA KERNEL READY') },
         @{ Kind = 'tdiv';  Expect = @('NOVA KERNEL EXCEPTION', '#DE divide error', 'on CPU', ', thread ') },
-        @{ Kind = 'tstack'; Expect = @('NOVA KERNEL EXCEPTION', '#DF double fault', 'handler ran on IST 1', ', thread ') }
+        @{ Kind = 'tstack'; Expect = @('NOVA KERNEL EXCEPTION', '#DF double fault', 'handler ran on IST 1', ', thread ') },
+        @{ Kind = 'hang';  Expect = @('smp: all 4 CPUs online', 'hanging here on purpose') }
     )
     try {
         foreach ($f in $faults) {
@@ -57,6 +58,18 @@ try {
                 foreach ($e in $f.Expect) { $a += @('--expect', $e) }
                 python @a
             }
+        }
+        # Real-hardware preparation: x2APIC mode (what some firmware hands over) with
+        # the CPU start-up code moved off 0x8000, and the no-disks build.
+        Step 'x2APIC + start-up code at 0x70000: boot, mouse, shell, user programs' {
+            & (Join-Path $PSScriptRoot 'build.ps1') -X2Apic -ApPage 70
+            python -I tools\boot_test.py --fresh-disk --mouse --shell --user --shot x2apic
+            if ($LASTEXITCODE -eq 0 -and -not (Select-String -Quiet -Path build\serial.log -Pattern 'x2APIC \(MSR\) mode')) { Write-Host 'x2APIC mode was not used'; $global:LASTEXITCODE = 1 }
+            if ($LASTEXITCODE -eq 0 -and -not (Select-String -Quiet -Path build\serial.log -Pattern 'start-up code at physical 0x70000')) { Write-Host 'the start-up code did not move'; $global:LASTEXITCODE = 1 }
+        }
+        Step 'no-disks build: no disk controller is touched' {
+            & (Join-Path $PSScriptRoot 'build.ps1') -NoDisks
+            python -I tools\boot_test.py --fresh-disk --shell --forbid 'ahci: disk' --forbid 'nvme: ' --expect 'NO-DISKS build' --expect 'no NovaFS on any disk' --expect 'shell: ready'
         }
     }
     finally {

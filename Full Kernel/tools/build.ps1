@@ -16,8 +16,22 @@
   Build a TEST kernel that triggers a deliberate fault after the boot screen:
   div, ud, gp, pf, df, stack, nmi or panic (see kernel\src\faults.rs). Use it to
   see the crash screen; run tools\build.ps1 again without it for a normal kernel.
+
+.PARAMETER NoDisks
+  A kernel that never starts the SATA/NVMe drivers (no disk controller is
+  touched at all). Meant for the first boot on a real PC.
+
+.PARAMETER X2Apic
+  TEST: the kernel switches the local APICs to x2APIC mode itself (what some
+  firmware hands over), so QEMU exercises that code path.
+
+.PARAMETER ApPage
+  TEST: put the other CPUs' start-up code on this page below 1 MiB (hex page
+  number, e.g. 70 = 0x70000) instead of 0x8000, to prove it can live anywhere.
 #>
-param([switch]$DebugBuild, [string]$Fault = '')
+param([switch]$DebugBuild, [string]$Fault = '', [switch]$NoDisks, [switch]$X2Apic, [string]$ApPage = '')
+
+$buildFlags = @{ NOVA_FAULT = $Fault; NOVA_NO_DISKS = $(if ($NoDisks) { '1' } else { '' }); NOVA_X2APIC = $(if ($X2Apic) { '1' } else { '' }); NOVA_AP_PAGE = $ApPage }
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -29,13 +43,13 @@ try {
     & (Join-Path $PSScriptRoot 'build_user.ps1')   # the kernel embeds the user programs
     cargo build @cargoFlags -p nova-boot --target x86_64-unknown-uefi
     if ($LASTEXITCODE -ne 0) { throw 'NovaBoot (bootloader) build failed' }
-    if ($Fault) {
-        $env:NOVA_FAULT = $Fault
-        Write-Host "TEST KERNEL: it will fault on purpose ($Fault)" -ForegroundColor Yellow
+    foreach ($name in $buildFlags.Keys) {
+        if ($buildFlags[$name]) { Set-Item "Env:$name" $buildFlags[$name] } else { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
     }
-    else {
-        Remove-Item Env:NOVA_FAULT -ErrorAction SilentlyContinue
-    }
+    if ($Fault) { Write-Host "TEST KERNEL: it will fault on purpose ($Fault)" -ForegroundColor Yellow }
+    if ($NoDisks) { Write-Host 'NO-DISKS kernel: the SATA/NVMe drivers will not start' -ForegroundColor Yellow }
+    if ($X2Apic) { Write-Host 'TEST KERNEL: switches to x2APIC mode' -ForegroundColor Yellow }
+    if ($ApPage) { Write-Host "TEST KERNEL: CPU start-up code on page 0x$ApPage" -ForegroundColor Yellow }
     cargo build @cargoFlags -p nova-kernel --target x86_64-unknown-none
     if ($LASTEXITCODE -ne 0) { throw 'Kernel build failed' }
 
@@ -47,6 +61,6 @@ try {
     Write-Host "Boot volume ready: $esp ($buildProfile)"
 }
 finally {
-    Remove-Item Env:NOVA_FAULT -ErrorAction SilentlyContinue
+    foreach ($name in $buildFlags.Keys) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
     Pop-Location
 }

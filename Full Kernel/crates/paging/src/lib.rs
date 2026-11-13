@@ -85,6 +85,12 @@ pub fn tables_for_large_range(bytes: u64) -> usize {
     gib.div_ceil(512) + gib
 }
 
+/// Like [`tables_for_large_range`], for a range starting anywhere (2 MiB
+/// aligned): it may straddle one more 1 GiB and one more 512 GiB boundary.
+pub fn tables_for_large_range_anywhere(bytes: u64) -> usize {
+    tables_for_large_range(bytes + (1 << 30)) + 1
+}
+
 /// An upper bound on the tables needed to map `pages` contiguous 4 KiB pages
 /// anywhere (PDPT + PDs + PTs, allowing for crossing boundaries).
 pub fn tables_for_small_range(pages: u64) -> usize {
@@ -261,6 +267,20 @@ mod tests {
         assert_eq!(index(0xFFFF_8000_0000_0000, 4), 256);
         assert_eq!(index(0x20_1000, 2), 1);
         assert_eq!(index(0x20_1000, 1), 1);
+    }
+
+    #[test]
+    fn maps_a_framebuffer_far_above_the_direct_map() {
+        // A 16 GiB GPU aperture at 1008 GiB (where firmware may put it with
+        // Resizable BAR), straddling a 512 GiB boundary at a 2 MiB offset.
+        let (phys, len) = (0xFB_FFE0_0000u64, 16u64 << 30);
+        let virt = 0xFFFF_8000_0000_0000 + phys;
+        let mut p = pool(1 + tables_for_large_range_anywhere(len));
+        let mut m = Mapper::new(&mut p, POOL_PHYS).unwrap();
+        m.map_range_2m(virt, phys, len, WRITABLE).unwrap();
+        assert_eq!(m.translate(virt).map(|t| t.0), Some(phys));
+        assert_eq!(m.translate(virt + len - 1).map(|t| t.0), Some(phys + len - 1));
+        assert_eq!(m.translate(virt + len), None);
     }
 
     #[test]

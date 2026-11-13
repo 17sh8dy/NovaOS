@@ -34,6 +34,14 @@ unsafe extern "C" {
 pub fn run_late_if_requested() {
     let kind = match option_env!("NOVA_FAULT") {
         Some(k @ ("tdiv" | "tstack")) => k,
+        Some("hang") => {
+            // A boot that freezes (as it might on unknown hardware): the boot
+            // log must stay readable on screen.
+            crate::kprintln!("fault-test: hanging here on purpose; the boot log above should stay on screen");
+            loop {
+                nova_x86::sti_hlt();
+            }
+        }
         _ => return,
     };
     crate::kprintln!("fault-test: deliberately triggering '{kind}' inside a kernel thread");
@@ -56,8 +64,8 @@ pub fn run_late_if_requested() {
 
 pub fn run_if_requested() {
     let Some(kind) = option_env!("NOVA_FAULT") else { return };
-    if matches!(kind, "tdiv" | "tstack") {
-        return; // runs later, in a thread
+    if matches!(kind, "tdiv" | "tstack" | "hang") {
+        return; // runs later (in a thread, or after the CPUs are up)
     }
     crate::kprintln!("fault-test: deliberately triggering '{kind}'");
     // SAFETY: every arm is a deliberate fault that the kernel must report.

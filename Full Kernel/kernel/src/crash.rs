@@ -104,6 +104,30 @@ impl Report {
             y += step;
         }
         s.text(x, y + step, scale, Rgb(0x8C, 0x94, 0xC0), "THE SYSTEM HAS STOPPED. RESTART THE VM OR THE PC.");
+        // What the kernel was doing just before: the last log lines (a photo
+        // of this screen is the whole bug report on a PC without a serial port).
+        let dim = Rgb(0x8C, 0x94, 0xC0);
+        let mut ly = y + 3 * step;
+        if ly + 2 * step < s.height() {
+            s.text(x, ly, scale, accent, "LAST LOG LINES:");
+            ly += step;
+            let max_chars = s.width().saturating_sub(2 * x) / ((font::WIDTH + 1) * scale);
+            let room = (s.height().saturating_sub(ly)) / step;
+            let mut lines: [Line; 24] = core::array::from_fn(|_| Line::new());
+            let mut n = 0;
+            crate::log::recent(|l| {
+                if n < lines.len() && !l.is_empty() && !l.starts_with("!!!") {
+                    let cut = l.char_indices().nth(max_chars).map_or(l.len(), |(i, _)| i);
+                    let _ = lines[n].write_str(&l[..cut]);
+                    n += 1;
+                }
+            });
+            let first = n.saturating_sub(room);
+            for l in &lines[first..n] {
+                s.text(x, ly, scale, dim, l.as_str());
+                ly += step;
+            }
+        }
     }
 }
 

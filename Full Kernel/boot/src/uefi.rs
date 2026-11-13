@@ -54,6 +54,24 @@ pub struct Guid {
 
 pub const LOADED_IMAGE_GUID: Guid =
     Guid { a: 0x5B1B_31A1, b: 0x9562, c: 0x11D2, d: [0x8E, 0x3F, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B] };
+/// EFI_GLOBAL_VARIABLE: the vendor of standard variables like "SecureBoot".
+pub const GLOBAL_VARIABLE_GUID: Guid =
+    Guid { a: 0x8BE4_DF61, b: 0x93CA, c: 0x11D2, d: [0xAA, 0x0D, 0x00, 0xE0, 0x98, 0x03, 0x2B, 0x8C] };
+
+/// The start of EFI_RUNTIME_SERVICES, up to GetVariable (all NovaBoot uses:
+/// it only ever *reads* variables).
+#[repr(C)]
+pub struct RuntimeServices {
+    pub hdr: TableHeader,
+    pub get_time: usize,
+    pub set_time: usize,
+    pub get_wakeup_time: usize,
+    pub set_wakeup_time: usize,
+    pub set_virtual_address_map: usize,
+    pub convert_pointer: usize,
+    pub get_variable: unsafe extern "efiapi" fn(*const u16, *const Guid, *mut u32, *mut usize, *mut c_void) -> Status,
+}
+
 pub const SIMPLE_FILE_SYSTEM_GUID: Guid =
     Guid { a: 0x964E_5B22, b: 0x6459, c: 0x11D2, d: [0x8E, 0x39, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B] };
 pub const GRAPHICS_OUTPUT_GUID: Guid =

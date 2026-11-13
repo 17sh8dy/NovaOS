@@ -1,0 +1,2 @@
+# Shell scripts run on Linux (the Dell): always LF line endings.
+*.sh text eol=lf

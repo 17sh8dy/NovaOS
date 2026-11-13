@@ -109,6 +109,13 @@ pub fn disks() -> Vec<(usize, String, u64, &'static str)> {
 /// Finds the disks on the PCI devices and mounts the file systems.
 pub fn init(devices: &[pci::PciDevice]) {
     let mut found = Vec::new();
+    // A "no disks" build (tools/build.ps1 -NoDisks, for a first run on real
+    // hardware) never starts the disk drivers: no disk controller is touched.
+    let no_disks = option_env!("NOVA_NO_DISKS").is_some_and(|v| v == "1");
+    if no_disks {
+        crate::kprintln!("files: this is a NO-DISKS build: SATA and NVMe drivers are not started");
+    }
+    let devices: &[pci::PciDevice] = if no_disks { &[] } else { devices };
     for d in ahci::init(devices) {
         crate::kprintln!("ahci: disk {}: {} ({} MiB)", found.len(), d.model, (d.sectors * 512) >> 20);
         found.push(DiskInfo { bus: Bus::Sata(d.index), model: d.model, bytes: d.sectors * 512 });

@@ -477,6 +477,7 @@ pub fn execute(line: &str) {
 /// The Terminal's thread: runs the shell (`nsh`, a user program) and starts
 /// it again if it ends. Falls back to the kernel's own shell if it can't.
 pub fn terminal() {
+    gui::end_boot_log();
     gui::with_console(|g| g.clear());
     let mut restarts = 0;
     loop {

@@ -19,6 +19,7 @@
 #![no_main]
 
 mod console;
+mod sbat;
 mod uefi;
 
 use core::convert::Infallible;
@@ -34,6 +35,7 @@ use uefi::*;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const KERNEL_PATH: &str = "\\NOVA\\KERNEL.ELF";
 const PAGE: u64 = 4096;
+const LARGE_PAGE: u64 = 2 << 20;
 /// Refuse kernels bigger than this (file or memory image).
 const MAX_KERNEL_BYTES: u64 = 64 << 20;
 /// Spare memory-map entries to allow for, since allocating memory can split
@@ -341,6 +343,25 @@ pub extern "efiapi" fn efi_main(image: Handle, st: *mut SystemTable) -> Status {
     }
 }
 
+impl Firmware {
+    /// A one-byte global UEFI variable ("SecureBoot", "SetupMode"), read only.
+    fn read_flag(&self, name: &str) -> Option<u8> {
+        let mut wide = [0u16; 32];
+        for (i, c) in name.encode_utf16().take(31).enumerate() {
+            wide[i] = c;
+        }
+        let mut value = 0u8;
+        let mut size = 1usize;
+        // SAFETY: the system table and its runtime services are the firmware's; all
+        // pointers are to our locals; GetVariable only reads the variable store.
+        let status = unsafe {
+            let rt = (*self.st).runtime_services as *const RuntimeServices;
+            ((*rt).get_variable)(wide.as_ptr(), &GLOBAL_VARIABLE_GUID, ptr::null_mut(), &mut size, &mut value as *mut u8 as *mut c_void)
+        };
+        (status == 0 && size == 1).then_some(value)
+    }
+}
+
 fn boot(fw: &Firmware) -> Result<Infallible, BootError> {
     // SAFETY: the system table is valid while boot services run.
     let st = unsafe { &*fw.st };
@@ -352,6 +373,13 @@ fn boot(fw: &Firmware) -> Result<Infallible, BootError> {
     }
 
     println!("NovaBoot {VERSION} - Nova OS bootloader");
+    match (fw.read_flag("SecureBoot"), fw.read_flag("SetupMode")) {
+        (Some(1), _) => println!("Secure Boot: ON (NovaBoot was verified by the firmware or shim)"),
+        (Some(0), Some(1)) => println!("Secure Boot: off (firmware in setup mode)"),
+        (Some(0), _) => println!("Secure Boot: off"),
+        (None, _) => println!("Secure Boot: off (this firmware has no Secure Boot variable)"),
+        (Some(v), _) => println!("Secure Boot: unknown (the firmware reports {v})"),
+    }
     print!("Firmware: ");
     console::print_ucs2(st.firmware_vendor);
     println!(" (revision {:#x})", st.firmware_revision);
@@ -381,8 +409,27 @@ fn boot(fw: &Firmware) -> Result<Infallible, BootError> {
     // How much physical memory to map: all RAM, and at least the low 4 GiB
     // (where the framebuffer, LAPIC and IOAPIC usually live).
     let ram_top = fw.highest_ram_address()?;
+    let mut framebuffer = framebuffer;
     let fb_top = framebuffer.addr + framebuffer.size;
     let direct = ram_top.max(fb_top).max(4 << 30).next_multiple_of(1 << 30).min(layout::MAX_DIRECT_MAP);
+    // A GPU with Resizable BAR can put its framebuffer far above RAM (hundreds
+    // of GiB up). Then it gets its own mapping at its usual direct-map address,
+    // as long as that stays clear of the kernel's other regions.
+    const FB_LIMIT: u64 = 32 << 40; // the kernel heap starts at direct-map + 32 TiB
+    let (fb_map_start, fb_map_len) = if framebuffer.is_present() && fb_top > direct {
+        if fb_top > FB_LIMIT {
+            println!("Screen: the framebuffer at {:#x} is too high for Nova to map; booting without a screen", framebuffer.addr);
+            println!("        (turning off Resizable BAR / Above 4G Decoding in the firmware would avoid this)");
+            framebuffer = Framebuffer::default();
+            (0, 0)
+        } else {
+            let start = framebuffer.addr & !(LARGE_PAGE - 1);
+            println!("Screen: framebuffer above the direct map ({:#x}); mapping it separately", framebuffer.addr);
+            (start, fb_top.next_multiple_of(LARGE_PAGE) - start)
+        }
+    } else {
+        (0, 0)
+    };
 
     // Boot info + Nova memory map, and a buffer for the final UEFI map.
     let (map_bytes, desc_size) = fw.memory_map_size()?;
@@ -400,6 +447,7 @@ fn boot(fw: &Firmware) -> Result<Infallible, BootError> {
         + 2 * paging::tables_for_large_range(direct)
         + paging::tables_for_small_range(kernel.pages)
         + paging::tables_for_small_range(stack_pages)
+        + if fb_map_len > 0 { paging::tables_for_large_range_anywhere(fb_map_len) } else { 0 }
         + 4;
     let pool_phys = fw.alloc_pages(pool_len as u64, "allocating page tables")?;
     // SAFETY: freshly allocated, zeroed, page-aligned and identity-mapped.
@@ -409,6 +457,9 @@ fn boot(fw: &Firmware) -> Result<Infallible, BootError> {
 
     mapper.map_range_2m(0, 0, direct, WRITABLE)?;
     mapper.map_range_2m(layout::PHYSICAL_MEMORY_OFFSET, 0, direct, WRITABLE | nx_bit)?;
+    if fb_map_len > 0 {
+        mapper.map_range_2m(layout::PHYSICAL_MEMORY_OFFSET + fb_map_start, fb_map_start, fb_map_len, WRITABLE | nx_bit)?;
+    }
     for i in 0..kernel.pages {
         let virt = kernel.virt + i * PAGE;
         let seg_flags = elf.page_flags(virt);

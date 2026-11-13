@@ -25,6 +25,7 @@ MUST_SEE = [
     "Exiting UEFI boot services",     # bootloader got to the handoff
     "NovaBoot: firmware exited",      # ExitBootServices succeeded
     "Nova kernel",                    # kernel's first line
+    "Secure Boot: ",                  # NovaBoot read the Secure Boot state (read-only)
     "memory map:",                    # kernel read the BootInfo
     "breakpoint self-test passed",    # stage 2: own IDT works
     "sched: self-test passed",        # stage 7: threads, preemption, SMP
@@ -793,6 +794,8 @@ def main() -> int:
     import argparse
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--memory", default="256M", help="guest RAM, e.g. 256M, 2G, 6G")
+    ap.add_argument("--forbid", metavar="TEXT", action="append",
+                    help="fail if TEXT appears in the log (repeatable)")
     ap.add_argument("--expect", metavar="TEXT", action="append",
                     help="negative test: pass if ALL the given TEXTs appear in the log instead of a "
                          "full boot (repeatable)")
@@ -848,6 +851,11 @@ def main() -> int:
                 break
             time.sleep(0.25)
         elapsed = time.time() - started
+
+        for text in opts.forbid or []:
+            if ok and text in read_log(serial):
+                ok = False
+                reason = f"the log contains {text!r}, which this build must not print"
 
         if ok and opts.mouse and not opts.expect:
             problem = mouse_test(qmp, serial)
