@@ -70,7 +70,12 @@ shell lists what is attached. Not yet: USB hubs, USB sticks, and non-boot-protoc
 drag, focus, minimise and close, and a taskbar with the **Nova** launcher, a button per window and a clock.
 Three apps: **Terminal** (the shell, unchanged), **Files** (browse the disk with the mouse or the arrow
 keys, preview text files) and **System** (CPUs, memory, disks, USB devices, uptime). Typing goes to
-whichever window has focus. Next: the shell becomes a user program (10b).
+whichever window has focus.
+
+**Stage 10b: the shell is a user program — done.** The Terminal runs `nsh`, an ordinary Nova program,
+not kernel code. It runs programs and waits for them, connects them with pipes (`ls /bin | grep e | wc`),
+runs jobs in the background (`hello &`), has `cd`/`pwd`, and hands system commands (`disks`, `format`,
+`mem`, `ps`, `install`, ...) to the kernel. `exit` ends it and the Terminal starts a fresh one.
 
 Next stages are in [docs/ROADMAP.md](docs/ROADMAP.md).
 

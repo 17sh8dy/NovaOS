@@ -16,13 +16,13 @@
 //! the frame allocator.
 
 use crate::log::SpinLock;
-use crate::{pmm, sched, shell, vm};
+use crate::{pipe, pmm, sched, shell, vm};
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::arch::global_asm;
-use core::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use nova_elf::{Elf, PF_W, PF_X};
 use nova_fs::vfs::Handle;
 use nova_paging::dynamic::{AddressSpace, TableMemory};
@@ -88,9 +88,19 @@ pub struct OpenFile {
     pub writable: bool,
 }
 
-/// File descriptors 0, 1 and 2 are the console; opened files start at 3.
-pub const FIRST_FILE_FD: u64 = 3;
-const MAX_OPEN_FILES: usize = 64;
+/// What a file descriptor refers to.
+#[derive(Clone)]
+pub enum Fd {
+    /// The Terminal: reads are typed lines, writes appear on screen.
+    Console,
+    File(OpenFile),
+    /// An end of a pipe; the end closes when its last descriptor does.
+    PipeIn(Arc<pipe::Reader>),
+    PipeOut(Arc<pipe::Writer>),
+}
+
+/// Descriptors 0, 1 and 2 (stdin, stdout, stderr) start as the console.
+const MAX_FDS: usize = 64;
 
 pub struct Process {
     pub pid: usize,
@@ -98,8 +108,12 @@ pub struct Process {
     /// The command-line arguments (one string; the program splits it).
     pub args: String,
     /// The working directory relative paths are resolved against.
-    pub cwd: String,
-    files: SpinLock<Vec<Option<OpenFile>>>,
+    cwd: SpinLock<String>,
+    /// File descriptors, indexed by number.
+    fds: SpinLock<Vec<Option<Fd>>>,
+    /// Whether its parent will `wait` for it (then the parent reports how it
+    /// ended, not the kernel).
+    waited: AtomicBool,
     root: u64,
     space: SpinLock<Option<AddressSpace<ProcMemory>>>,
     /// The current end of the heap (the next `sbrk` starts here).
@@ -112,42 +126,66 @@ impl Process {
         self.root
     }
 
-    /// Adds an open file and returns its descriptor, or None if the table is full.
-    pub fn add_file(&self, file: OpenFile) -> Option<u64> {
-        self.files.with(|t| {
+    pub fn cwd(&self) -> String {
+        self.cwd.with(|c| c.clone())
+    }
+
+    pub fn set_cwd(&self, dir: &str) {
+        self.cwd.with(|c| *c = String::from(dir));
+    }
+
+    /// Puts `fd` in the lowest free descriptor and returns its number, or None if the table is full.
+    pub fn add_fd(&self, fd: Fd) -> Option<u64> {
+        self.fds.with(|t| {
             let slot = match t.iter().position(|f| f.is_none()) {
                 Some(i) => i,
-                None if t.len() < MAX_OPEN_FILES => {
+                None if t.len() < MAX_FDS => {
                     t.push(None);
                     t.len() - 1
                 }
                 None => return None,
             };
-            t[slot] = Some(file);
-            Some(slot as u64 + FIRST_FILE_FD)
+            t[slot] = Some(fd);
+            Some(slot as u64)
         })
     }
 
-    /// A copy of the open file `fd`, if there is one.
+    pub fn add_file(&self, file: OpenFile) -> Option<u64> {
+        self.add_fd(Fd::File(file))
+    }
+
+    /// What descriptor `fd` refers to.
+    pub fn fd(&self, fd: u64) -> Option<Fd> {
+        self.fds.with(|t| t.get(fd as usize).cloned().flatten())
+    }
+
+    /// A copy of the open file `fd`, if it is a file.
     pub fn file(&self, fd: u64) -> Option<OpenFile> {
-        let i = fd.checked_sub(FIRST_FILE_FD)? as usize;
-        self.files.with(|t| t.get(i).copied().flatten())
+        match self.fd(fd)? {
+            Fd::File(f) => Some(f),
+            _ => None,
+        }
     }
 
     /// Replaces the saved state of open file `fd` (e.g. after a read moved the offset).
     pub fn update_file(&self, fd: u64, f: impl FnOnce(&mut OpenFile)) {
-        if let Some(i) = fd.checked_sub(FIRST_FILE_FD) {
-            self.files.with(|t| {
-                if let Some(Some(file)) = t.get_mut(i as usize) {
-                    f(file);
-                }
-            });
-        }
+        self.fds.with(|t| {
+            if let Some(Some(Fd::File(file))) = t.get_mut(fd as usize) {
+                f(file);
+            }
+        });
     }
 
-    pub fn close_file(&self, fd: u64) -> bool {
-        let Some(i) = fd.checked_sub(FIRST_FILE_FD) else { return false };
-        self.files.with(|t| t.get_mut(i as usize).is_some_and(|f| f.take().is_some()))
+    pub fn close_fd(&self, fd: u64) -> bool {
+        let old = self.fds.with(|t| t.get_mut(fd as usize).and_then(|f| f.take()));
+        // Dropped outside the table's lock: closing a pipe end may wake someone.
+        old.is_some()
+    }
+
+    /// Closes everything (the process is ending).
+    fn close_all(&self) {
+        let all = self.fds.with(core::mem::take);
+        drop(all);
     }
 
     /// Checks that `[addr, addr+len)` is user memory that is mapped with the
@@ -313,8 +351,9 @@ fn create(name: &str, image: &[u8], args: &str, cwd: &str) -> Result<(Arc<Proces
         pid,
         name: String::from(name),
         args: String::from(args),
-        cwd: String::from(cwd),
-        files: SpinLock::new(Vec::new()),
+        cwd: SpinLock::new(String::from(cwd)),
+        fds: SpinLock::new(alloc::vec![Some(Fd::Console), Some(Fd::Console), Some(Fd::Console)]),
+        waited: AtomicBool::new(false),
         root,
         space: SpinLock::new(Some(space)),
         brk: AtomicU64::new(HEAP_START),
@@ -343,24 +382,80 @@ fn load_image(spec: &str, cwd: &str) -> Result<(String, Vec<u8>), String> {
     }
 }
 
+/// Is there a program called `spec` (see [`load_image`])?
+pub fn exists(spec: &str) -> bool {
+    load_image(spec, &shell::cwd()).is_ok()
+}
+
 /// Starts a program (see [`load_image`]) as a new process with `args`.
 /// Returns its pid and a handle to wait for it.
 pub fn spawn(spec: &str, args: &str) -> Result<(usize, sched::JoinHandle), String> {
+    spawn_with(spec, args, None, None, false).map(|(p, h)| (p.pid, h))
+}
+
+/// Children a process will `wait` for: (parent pid, child, its thread).
+static WAITABLE: SpinLock<Vec<(usize, Arc<Process>, sched::JoinHandle)>> = SpinLock::new(Vec::new());
+
+/// Starts a program with the given standard input and output (default: the
+/// console). `waited`: someone will collect its exit code (and report it), so
+/// the kernel does not announce its exit.
+pub fn spawn_with(spec: &str, args: &str, stdin: Option<Fd>, stdout: Option<Fd>, waited: bool) -> Result<(Arc<Process>, sched::JoinHandle), String> {
     let cwd = shell::cwd();
     let (name, image) = load_image(spec, &cwd)?;
     let name = name.as_str();
     let (proc, entry, sp) = create(name, &image, args, &cwd)?;
+    proc.fds.with(|t| {
+        if let Some(fd) = stdin {
+            t[0] = Some(fd);
+        }
+        if let Some(fd) = stdout {
+            t[1] = Some(fd);
+        }
+    });
+    proc.waited.store(waited, Ordering::SeqCst);
     let pid = proc.pid;
     PROCS.with(|p| p.push(proc.clone()));
     let handle = sched::spawn_user(name, proc.clone(), move || enter_user(entry, sp));
     match handle {
-        Some(h) => Ok((pid, h)),
+        Some(h) => Ok((proc, h)),
         None => {
+            proc.close_all();
             PROCS.with(|p| p.retain(|q| q.pid != pid));
             proc.destroy_space();
             Err(String::from("could not start a thread for the process"))
         }
     }
+}
+
+/// The exit code of a process that has ended.
+pub fn exit_code(p: &Process) -> i64 {
+    p.exit_code.load(Ordering::SeqCst)
+}
+
+/// Starts a child of the calling process. Unless it runs in the background,
+/// the caller collects it with [`wait`]. Returns the pid.
+pub fn spawn_child(spec: &str, args: &str, stdin: Option<Fd>, stdout: Option<Fd>, background: bool) -> Result<usize, String> {
+    let (child, handle) = spawn_with(spec, args, stdin, stdout, !background)?;
+    let pid = child.pid;
+    if !background {
+        // We hold the child and its thread, so this works even if it has already ended.
+        let me = sched::current_process().map_or(0, |p| p.pid);
+        WAITABLE.with(|w| w.push((me, child, handle)));
+    }
+    Ok(pid)
+}
+
+/// Waits for child `pid` of the calling process to end; returns its exit code (or -ECHILD).
+pub fn wait(pid: usize) -> i64 {
+    const ECHILD: i64 = -10;
+    let me = sched::current_process().map_or(0, |p| p.pid);
+    let entry = WAITABLE.with(|w| {
+        let i = w.iter().position(|(parent, c, _)| *parent == me && c.pid == pid)?;
+        Some(w.swap_remove(i))
+    });
+    let Some((_, child, handle)) = entry else { return ECHILD };
+    handle.join_sleeping();
+    exit_code(&child)
 }
 
 global_asm!(
@@ -411,7 +506,9 @@ fn enter_user(entry: u64, sp: u64) -> ! {
 pub fn exit_current(code: i64) -> ! {
     nova_x86::cli();
     let proc = sched::current_process().expect("exit_current outside a process");
-    shell::announce(&alloc::format!("[process {} ({}) exited with code {code}]", proc.pid, proc.name), false);
+    if !proc.waited.load(Ordering::SeqCst) {
+        shell::announce(&alloc::format!("[process {} ({}) exited with code {code}]", proc.pid, proc.name), false);
+    }
     proc.exit_code.store(code, Ordering::SeqCst);
     finish(&proc)
 }
@@ -443,6 +540,16 @@ fn finish(proc: &Arc<Process>) -> ! {
     unsafe { nova_x86::write_cr3(kroot) };
     proc.destroy_space();
     PROCS.with(|p| p.retain(|q| q.pid != proc.pid));
+    // Children nobody will wait for any more.
+    let orphans: Vec<_> = WAITABLE.with(|w| {
+        let (gone, keep): (Vec<_>, Vec<_>) = core::mem::take(w).into_iter().partition(|(parent, ..)| *parent == proc.pid);
+        *w = keep;
+        gone
+    });
+    // Interrupts are off here, and closing pipe ends may wake threads: that's fine
+    // (unpark only queues them).
+    proc.close_all();
+    drop(orphans);
     sched::exit()
 }
 

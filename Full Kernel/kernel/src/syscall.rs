@@ -12,8 +12,8 @@
 use crate::exceptions::ExceptionFrame;
 use crate::gui::{COLOR_ERROR, COLOR_TEXT};
 use crate::files::{self, VFS};
-use crate::process::{OpenFile, FIRST_FILE_FD};
-use crate::{interrupts, process, sched, shell};
+use crate::process::{Fd, OpenFile};
+use crate::{interrupts, pipe, process, sched, shell};
 use nova_fs::{FsError, NodeKind};
 use core::arch::global_asm;
 
@@ -33,14 +33,26 @@ pub const SYS_STAT: u64 = 12;
 pub const SYS_MKDIR: u64 = 13;
 pub const SYS_UNLINK: u64 = 14;
 pub const SYS_GETARGS: u64 = 15;
+pub const SYS_SPAWN: u64 = 16;
+pub const SYS_WAIT: u64 = 17;
+pub const SYS_PIPE: u64 = 18;
+pub const SYS_CHDIR: u64 = 19;
+pub const SYS_GETCWD: u64 = 20;
+pub const SYS_READLINE: u64 = 21;
+pub const SYS_CTL: u64 = 22;
 
 /// `open` flags.
 const O_WRITE: u64 = 1;
 const O_CREATE: u64 = 2;
 const O_TRUNC: u64 = 4;
 
+const ENOENT: i64 = -2;
+const EINTR: i64 = -4;
 const EBADF: i64 = -9;
+const ENOMEM: i64 = -12;
+const ENOTDIR: i64 = -20;
 const EINVAL: i64 = -22;
+const EPIPE: i64 = -32;
 const ENOSYS: i64 = -38;
 
 global_asm!(
@@ -117,7 +129,7 @@ pub fn entry_address() -> u64 {
 extern "sysv64" fn nova_syscall_handler(f: &mut ExceptionFrame) {
     // The SYSCALL instruction left interrupts off; the call itself may block or be preempted.
     nova_x86::sti();
-    let (nr, a, b, c, d) = (f.rax, f.rdi, f.rsi, f.rdx, f.r10);
+    let (nr, a, b, c, d, e) = (f.rax, f.rdi, f.rsi, f.rdx, f.r10, f.r8);
     let ret: i64 = match nr {
         SYS_EXIT => process::exit_current(a as i64),
         SYS_WRITE => sys_write(a, b, c),
@@ -145,6 +157,13 @@ extern "sysv64" fn nova_syscall_handler(f: &mut ExceptionFrame) {
         SYS_MKDIR => with_path(a, b, |p| VFS.lock().mkdir(p).map(|_| 0)),
         SYS_UNLINK => with_path(a, b, |p| VFS.lock().remove(p).map(|_| 0)),
         SYS_GETARGS => sys_getargs(a, b),
+        SYS_SPAWN => sys_spawn(a, b, c, d, e),
+        SYS_WAIT => process::wait(a as usize),
+        SYS_PIPE => sys_pipe(a),
+        SYS_CHDIR => sys_chdir(a, b),
+        SYS_GETCWD => sys_getcwd(a, b),
+        SYS_READLINE => sys_readline(a, b, c, d),
+        SYS_CTL => sys_ctl(a, b),
         _ => ENOSYS,
     };
     f.rax = ret as u64;
@@ -158,7 +177,7 @@ fn user_path(proc: &process::Process, ptr: u64, len: u64) -> Result<alloc::strin
     }
     let bytes = proc.copy_from_user(ptr, len as usize)?;
     let s = core::str::from_utf8(&bytes).map_err(|_| EINVAL)?;
-    Ok(files::absolute(&proc.cwd, s))
+    Ok(files::absolute(&proc.cwd(), s))
 }
 
 /// Runs `f` with the (absolute) path argument; maps file system errors to errno.
@@ -203,7 +222,7 @@ fn sys_open(ptr: u64, len: u64, flags: u64) -> i64 {
 
 fn sys_close(fd: u64) -> i64 {
     match sched::current_process() {
-        Some(p) if p.close_file(fd) => 0,
+        Some(p) if p.close_fd(fd) => 0,
         _ => EBADF,
     }
 }
@@ -328,42 +347,178 @@ fn file_io(fd: u64, ptr: u64, len: u64, write: bool) -> i64 {
 }
 
 fn sys_write(fd: u64, ptr: u64, len: u64) -> i64 {
-    if fd >= FIRST_FILE_FD {
-        return file_io(fd, ptr, len, true);
-    }
-    if fd != 1 && fd != 2 {
-        return EBADF;
-    }
     if len as usize > process::MAX_COPY {
         return EINVAL;
     }
     let Some(proc) = sched::current_process() else { return EINVAL };
-    match proc.copy_from_user(ptr, len as usize) {
-        Ok(bytes) => {
-            shell::out(&alloc::string::String::from_utf8_lossy(&bytes), if fd == 2 { COLOR_ERROR } else { COLOR_TEXT });
-            bytes.len() as i64
-        }
-        Err(e) => e,
+    match proc.fd(fd) {
+        Some(Fd::File(_)) => file_io(fd, ptr, len, true),
+        Some(Fd::Console) => match proc.copy_from_user(ptr, len as usize) {
+            Ok(bytes) => {
+                shell::out(&alloc::string::String::from_utf8_lossy(&bytes), if fd == 2 { COLOR_ERROR } else { COLOR_TEXT });
+                bytes.len() as i64
+            }
+            Err(e) => e,
+        },
+        Some(Fd::PipeOut(w)) => match proc.copy_from_user(ptr, len as usize) {
+            Ok(bytes) => w.write(&bytes).map_or(EPIPE, |n| n as i64),
+            Err(e) => e,
+        },
+        Some(Fd::PipeIn(_)) | None => EBADF,
     }
 }
 
 fn sys_read(fd: u64, ptr: u64, len: u64) -> i64 {
-    if fd >= FIRST_FILE_FD {
-        return file_io(fd, ptr, len, false);
-    }
-    if fd != 0 {
-        return EBADF;
-    }
     if len as usize > process::MAX_COPY {
         return EINVAL;
     }
     let Some(proc) = sched::current_process() else { return EINVAL };
-    // Read a whole line from the keyboard (the shell's line editor does the work).
-    let mut line = shell::read_line_for_user().into_bytes();
-    line.push(b'\n');
-    line.truncate(len as usize);
-    match proc.copy_to_user(ptr, &line) {
-        Ok(()) => line.len() as i64,
+    let data = match proc.fd(fd) {
+        Some(Fd::File(_)) => return file_io(fd, ptr, len, false),
+        // A whole line from the keyboard (the Terminal's line editor does the
+        // work); Ctrl+C is end-of-file.
+        Some(Fd::Console) => match shell::read_line_for_user() {
+            Some(line) => {
+                let mut b = line.into_bytes();
+                b.push(b'\n');
+                b
+            }
+            None => alloc::vec::Vec::new(),
+        },
+        Some(Fd::PipeIn(r)) => r.read(len as usize),
+        Some(Fd::PipeOut(_)) | None => return EBADF,
+    };
+    let mut data = data;
+    data.truncate(len as usize);
+    match proc.copy_to_user(ptr, &data) {
+        Ok(()) => data.len() as i64,
+        Err(e) => e,
+    }
+}
+
+/// Reads a short string argument from user memory.
+fn user_str(proc: &process::Process, ptr: u64, len: u64, max: u64) -> Result<alloc::string::String, i64> {
+    if len > max {
+        return Err(EINVAL);
+    }
+    let bytes = proc.copy_from_user(ptr, len as usize)?;
+    core::str::from_utf8(&bytes).map(alloc::string::String::from).map_err(|_| EINVAL)
+}
+
+/// `spawn(command, stdin fd, stdout fd, flags)`: starts "PROGRAM ARGS..." as a
+/// child. A descriptor of u64::MAX means "the console". Flag 1 = background
+/// (not waited for; the kernel reports how it ends). Returns the pid.
+fn sys_spawn(ptr: u64, len: u64, stdin: u64, stdout: u64, flags: u64) -> i64 {
+    let Some(proc) = sched::current_process() else { return EINVAL };
+    let line = match user_str(&proc, ptr, len, 1024) {
+        Ok(l) => l,
+        Err(e) => return e,
+    };
+    let line = line.trim();
+    let (spec, args) = line.split_once(' ').map_or((line, ""), |(a, b)| (a, b.trim()));
+    if spec.is_empty() {
+        return EINVAL;
+    }
+    let pick = |fd: u64| -> Result<Option<Fd>, i64> {
+        if fd == u64::MAX {
+            return Ok(None);
+        }
+        proc.fd(fd).map(Some).ok_or(EBADF)
+    };
+    let (stdin, stdout) = match (pick(stdin), pick(stdout)) {
+        (Ok(a), Ok(b)) => (a, b),
+        (Err(e), _) | (_, Err(e)) => return e,
+    };
+    if !process::exists(spec) {
+        return ENOENT;
+    }
+    match process::spawn_child(spec, args, stdin, stdout, flags & 1 != 0) {
+        Ok(pid) => pid as i64,
+        Err(e) => {
+            shell::announce(&e, true);
+            ENOMEM
+        }
+    }
+}
+
+/// `pipe(out)`: writes the read and write descriptors (two u64s) at `out`.
+fn sys_pipe(out: u64) -> i64 {
+    let Some(proc) = sched::current_process() else { return EINVAL };
+    let (r, w) = pipe::new();
+    let Some(rfd) = proc.add_fd(Fd::PipeIn(r)) else { return -24 };
+    let Some(wfd) = proc.add_fd(Fd::PipeOut(w)) else {
+        proc.close_fd(rfd);
+        return -24;
+    };
+    let mut rec = [0u8; 16];
+    rec[..8].copy_from_slice(&rfd.to_le_bytes());
+    rec[8..].copy_from_slice(&wfd.to_le_bytes());
+    match proc.copy_to_user(out, &rec) {
+        Ok(()) => 0,
+        Err(e) => {
+            proc.close_fd(rfd);
+            proc.close_fd(wfd);
+            e
+        }
+    }
+}
+
+fn sys_chdir(ptr: u64, len: u64) -> i64 {
+    let Some(proc) = sched::current_process() else { return EINVAL };
+    let path = match user_path(&proc, ptr, len) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    match VFS.lock().stat(&path) {
+        Ok(st) if st.kind == NodeKind::Dir => {
+            let norm = nova_fs::path::components(&path).map(|c| nova_fs::path::join(&c)).unwrap_or(path);
+            proc.set_cwd(&norm);
+            0
+        }
+        Ok(_) => ENOTDIR,
+        Err(e) => files::errno(e),
+    }
+}
+
+fn sys_getcwd(ptr: u64, len: u64) -> i64 {
+    let Some(proc) = sched::current_process() else { return EINVAL };
+    let mut bytes = proc.cwd().into_bytes();
+    bytes.truncate((len as usize).min(process::MAX_COPY));
+    match proc.copy_to_user(ptr, &bytes) {
+        Ok(()) => bytes.len() as i64,
+        Err(e) => e,
+    }
+}
+
+/// `readline(prompt, buf)`: the Terminal's line editor, with history (what
+/// the shell reads commands with). Returns the length, or -EINTR on Ctrl+C.
+fn sys_readline(prompt_ptr: u64, prompt_len: u64, buf: u64, len: u64) -> i64 {
+    let Some(proc) = sched::current_process() else { return EINVAL };
+    if !matches!(proc.fd(0), Some(Fd::Console)) {
+        return EBADF;
+    }
+    let prompt = match user_str(&proc, prompt_ptr, prompt_len, 64) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    let Some(line) = shell::read_command_line(&prompt) else { return EINTR };
+    let mut bytes = line.into_bytes();
+    bytes.truncate((len as usize).min(process::MAX_COPY));
+    match proc.copy_to_user(buf, &bytes) {
+        Ok(()) => bytes.len() as i64,
+        Err(e) => e,
+    }
+}
+
+/// `ctl(command)`: runs one of the kernel's system commands (disks, format,
+/// mem, ps, ...) for the shell; it prints on the console.
+fn sys_ctl(ptr: u64, len: u64) -> i64 {
+    let Some(proc) = sched::current_process() else { return EINVAL };
+    match user_str(&proc, ptr, len, 1024) {
+        Ok(line) => {
+            shell::execute(line.trim());
+            0
+        }
         Err(e) => e,
     }
 }

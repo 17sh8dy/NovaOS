@@ -27,6 +27,13 @@ pub mod nr {
     pub const MKDIR: u64 = 13;
     pub const UNLINK: u64 = 14;
     pub const GETARGS: u64 = 15;
+    pub const SPAWN: u64 = 16;
+    pub const WAIT: u64 = 17;
+    pub const PIPE: u64 = 18;
+    pub const CHDIR: u64 = 19;
+    pub const GETCWD: u64 = 20;
+    pub const READLINE: u64 = 21;
+    pub const CTL: u64 = 22;
 }
 
 /// `open` flags.
@@ -41,6 +48,11 @@ pub const SEEK_END: u64 = 2;
 
 /// Error numbers returned (negated) by the kernel.
 pub mod errno {
+    pub const ENOENT: i64 = 2;
+    pub const EINTR: i64 = 4;
+    pub const ECHILD: i64 = 10;
+    pub const ENOTDIR: i64 = 20;
+    pub const EPIPE: i64 = 32;
     pub const EFAULT: i64 = 14;
     pub const EINVAL: i64 = 22;
     pub const ENOMEM: i64 = 12;
@@ -90,6 +102,81 @@ pub unsafe fn syscall4(nr: u64, a: u64, b: u64, c: u64, d: u64) -> i64 {
         );
     }
     ret
+}
+
+/// Raw system call with five arguments (`r10`, `r8` for the fourth and fifth).
+///
+/// # Safety
+/// As [`syscall3`].
+#[inline]
+pub unsafe fn syscall5(nr: u64, a: u64, b: u64, c: u64, d: u64, e: u64) -> i64 {
+    let ret: i64;
+    unsafe {
+        asm!(
+            "syscall",
+            inlateout("rax") nr as i64 => ret,
+            in("rdi") a,
+            in("rsi") b,
+            in("rdx") c,
+            in("r10") d,
+            in("r8") e,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+/// Standard input/output given to [`spawn`]: the console.
+pub const CONSOLE: u64 = u64::MAX;
+
+/// Starts `command` ("PROGRAM ARGS...") as a child with the given standard
+/// input and output descriptors ([`CONSOLE`] for the console). `background`:
+/// don't wait for it (the kernel reports how it ends). Returns the pid, or
+/// -ENOENT if there is no such program.
+pub fn spawn(command: &str, stdin: u64, stdout: u64, background: bool) -> i64 {
+    // SAFETY: the kernel checks the pointer and length.
+    unsafe { syscall5(nr::SPAWN, command.as_ptr() as u64, command.len() as u64, stdin, stdout, background as u64) }
+}
+
+/// Waits for a child started with [`spawn`] to end; returns its exit code.
+pub fn wait(pid: u64) -> i64 {
+    // SAFETY: one integer argument.
+    unsafe { syscall3(nr::WAIT, pid, 0, 0) }
+}
+
+/// A new pipe: (read end, write end).
+pub fn pipe() -> Result<(u64, u64), i64> {
+    let mut rec = [0u64; 2];
+    // SAFETY: the kernel checks the pointer.
+    let r = unsafe { syscall3(nr::PIPE, rec.as_mut_ptr() as u64, 0, 0) };
+    if r < 0 { Err(r) } else { Ok((rec[0], rec[1])) }
+}
+
+pub fn chdir(path: &str) -> i64 {
+    // SAFETY: the kernel checks the pointer and length.
+    unsafe { syscall3(nr::CHDIR, path.as_ptr() as u64, path.len() as u64, 0) }
+}
+
+/// The working directory, using `buf` as storage.
+pub fn getcwd(buf: &mut [u8]) -> &str {
+    // SAFETY: the kernel checks the pointer and length.
+    let n = unsafe { syscall3(nr::GETCWD, buf.as_mut_ptr() as u64, buf.len() as u64, 0) };
+    core::str::from_utf8(&buf[..n.max(0) as usize]).unwrap_or("/")
+}
+
+/// Shows `prompt` and reads an edited command line (with history) from the
+/// Terminal. Returns its length, or -EINTR if Ctrl+C cancelled it.
+pub fn readline(prompt: &str, buf: &mut [u8]) -> i64 {
+    // SAFETY: the kernel checks both buffers.
+    unsafe { syscall4(nr::READLINE, prompt.as_ptr() as u64, prompt.len() as u64, buf.as_mut_ptr() as u64, buf.len() as u64) }
+}
+
+/// Asks the kernel to run one of its system commands (`disks`, `mem`, `ps`, ...).
+pub fn ctl(command: &str) -> i64 {
+    // SAFETY: the kernel checks the pointer and length.
+    unsafe { syscall3(nr::CTL, command.as_ptr() as u64, command.len() as u64, 0) }
 }
 
 /// Opens a file; returns a descriptor (>= 3) or -errno.

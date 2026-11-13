@@ -1,5 +1,12 @@
-//! The Nova shell: a kernel thread that reads typed lines from the keyboard,
-//! runs built-in commands and prints on the console.
+//! The Terminal's plumbing and the kernel's system commands.
+//!
+//! Since stage 10b the shell people type into is `nsh`, a *user program*
+//! (`user/src/bin/nsh.rs`): [`terminal`] starts it (and starts it again if it
+//! exits). It reads command lines through [`read_command_line`] (the line
+//! editor, with history) and asks for the system commands below (`disks`,
+//! `format`, `mem`, `ps`, ...) with the `ctl` system call, which lands in
+//! [`execute`]. If `nsh` cannot be started, [`run`] is the old shell loop
+//! running in the kernel, so the machine stays usable.
 //!
 //! It sleeps (`sched::park`) while there is nothing to read; the keyboard
 //! interrupt wakes it. Every console line is also mirrored to the serial log
@@ -7,6 +14,7 @@
 
 use crate::gui::{self, COLOR_ACCENT, COLOR_DIM, COLOR_ERROR, COLOR_TEXT};
 use crate::files::{self, VFS};
+use crate::kmutex::KMutex;
 use crate::log::SpinLock;
 use crate::{cpu, heap, interrupts, pmm, process, programs, ps2, sched};
 use alloc::string::String;
@@ -19,10 +27,21 @@ const PROMPT: &str = "nova> ";
 /// The working directory relative paths are resolved against.
 static CWD: SpinLock<String> = SpinLock::new(String::new());
 
-/// The shell's current directory (what a new process inherits).
+/// The current directory: the calling process's, or (for the kernel shell)
+/// its own. New processes inherit it.
 pub fn cwd() -> String {
+    if let Some(p) = sched::current_process() {
+        return p.cwd();
+    }
     let c = CWD.with(|c| c.clone());
     if c.is_empty() { String::from("/") } else { c }
+}
+
+fn set_cwd(dir: String) {
+    match sched::current_process() {
+        Some(p) => p.set_cwd(&dir),
+        None => CWD.with(|c| *c = dir),
+    }
 }
 
 fn abs(arg: &str) -> String {
@@ -98,11 +117,22 @@ fn redraw_line(start: (usize, usize), text: &str, cursor: usize, max: usize) {
 /// Reads one line for a user program (the `read` system call): the same
 /// line editor, no prompt (the program prints its own). The calling thread
 /// becomes the one the keyboard wakes.
-pub fn read_line_for_user() -> String {
+pub fn read_line_for_user() -> Option<String> {
     let mut editor = LineEditor::new();
-    let line = read_line(&mut editor, None).unwrap_or_default();
-    crate::kprintln!("con: (input) {line}");
+    let line = read_line(&mut editor, None);
+    crate::kprintln!("con: (input) {}", line.as_deref().unwrap_or("^C"));
     line
+}
+
+/// The command-line editor; its history lasts as long as the machine runs.
+static COMMAND_EDITOR: KMutex<Option<LineEditor>> = KMutex::new(None);
+
+/// Reads a command line after `prompt`, with editing and history (the
+/// `readline` system call, used by the shell). None = Ctrl+C.
+pub fn read_command_line(prompt: &str) -> Option<String> {
+    let mut ed = COMMAND_EDITOR.lock();
+    let editor = ed.get_or_insert_with(LineEditor::new);
+    read_line(editor, Some(prompt))
 }
 
 /// Reads one line, editing in place. Returns None on Ctrl+C.
@@ -185,7 +215,7 @@ halt            stop everything
 Keys: Left/Right/Home/End/Delete edit, Up/Down browse history,
       Ctrl+U kill line, Ctrl+W kill word, Ctrl+C cancel, Ctrl+L clear.";
 
-fn execute(line: &str) {
+pub fn execute(line: &str) {
     let mut parts = line.trim().splitn(2, ' ');
     let cmd = parts.next().unwrap_or("");
     let rest = parts.next().unwrap_or("").trim();
@@ -276,7 +306,7 @@ fn execute(line: &str) {
             match VFS.lock().stat(&target) {
                 Ok(s) if s.kind == NodeKind::Dir => {
                     let norm = nova_fs::path::components(&target).map(|c| nova_fs::path::join(&c)).unwrap_or(target);
-                    CWD.with(|c| *c = norm);
+                    set_cwd(norm);
                 }
                 Ok(_) => fs_err(rest, nova_fs::FsError::NotDir),
                 Err(e) => fs_err(rest, e),
@@ -371,7 +401,8 @@ fn execute(line: &str) {
             let mut it = rest.split_whitespace();
             match (it.next().and_then(|d| d.parse::<usize>().ok()), it.next()) {
                 (Some(disk), Some("erase")) => {
-                    if !process::list().is_empty() {
+                    let me = sched::current_process().map(|p| p.pid);
+                    if process::list().iter().any(|(pid, _)| Some(*pid) != me) {
                         errln("stop the running processes first");
                     } else {
                         match files::format_disk(disk) {
@@ -443,12 +474,39 @@ fn execute(line: &str) {
     }
 }
 
-/// The shell thread's body.
+/// The Terminal's thread: runs the shell (`nsh`, a user program) and starts
+/// it again if it ends. Falls back to the kernel's own shell if it can't.
+pub fn terminal() {
+    gui::with_console(|g| g.clear());
+    let mut restarts = 0;
+    loop {
+        match process::spawn_with("nsh", "", None, None, true) {
+            Ok((proc, handle)) => {
+                crate::kprintln!("shell: ready (nsh, a user program, is process {})", proc.pid);
+                handle.join_sleeping();
+                let code = process::exit_code(&proc);
+                restarts += 1;
+                if restarts > 20 {
+                    announce("[the shell keeps ending; switching to the kernel's built-in shell]", true);
+                    break;
+                }
+                announce(&alloc::format!("[the shell ended (code {code}); starting a new one]"), code != 0);
+            }
+            Err(e) => {
+                crate::kprintln!("shell: could not start nsh ({e}); using the kernel's built-in shell");
+                break;
+            }
+        }
+    }
+    run();
+}
+
+/// The kernel's built-in shell loop (the fallback when `nsh` can't run).
 pub fn run() {
     ps2::set_key_waiter(sched::current_id());
     gui::with_console(|g| g.clear());
-    out("Nova shell. Type 'help'.\n", COLOR_DIM);
-    crate::kprintln!("shell: ready");
+    out("Nova kernel shell (fallback). Type 'help'.\n", COLOR_DIM);
+    crate::kprintln!("shell: ready (the kernel's built-in shell)");
     let mut editor = LineEditor::new();
     loop {
         if let Some(line) = read_line(&mut editor, Some(PROMPT)) {

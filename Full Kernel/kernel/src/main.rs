@@ -39,6 +39,7 @@ mod kmutex;
 mod log;
 mod nvme;
 mod pci;
+mod pipe;
 mod pmm;
 mod rtc;
 mod process;
@@ -313,7 +314,7 @@ fn kmain(boot_copy: &'static BootInfo) -> ! {
         if have_gui {
             gui::set_cpus(cpu::online_count());
             if keyboard || usb_input {
-                if sched::spawn("shell", shell::run).is_none() {
+                if sched::spawn("terminal", shell::terminal).is_none() {
                     kprintln!("shell: could not start");
                 }
             } else {

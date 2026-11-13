@@ -169,10 +169,15 @@ def press(qmp, qcode, shift=False):
     time.sleep(0.04)
 
 
+SHIFTED = {"|": "backslash", "&": "7", "_": "minus", "!": "1", ":": "semicolon"}
+
+
 def type_text(qmp, text):
     for ch in text:
         if ch in QCODES:
             press(qmp, QCODES[ch])
+        elif ch in SHIFTED:
+            press(qmp, SHIFTED[ch], shift=True)
         elif ch.isupper():
             press(qmp, ch.lower(), shift=True)
         else:
@@ -315,12 +320,16 @@ def user_test(qmp, serial) -> str | None:
     first_done = next((i for i, (p, n) in enumerate(pids) if n == "10"), None)
     if first_done is None or len({p for p, _ in pids[:first_done]}) < 2:
         return "the two counters did not interleave (no multitasking between processes)"
-    if not wait_for(r"con: no user processes running", 1):
-        # give them time to be reaped, then ask
-        time.sleep(1.0)
+    time.sleep(1.0)  # give them time to be reaped, then ask
+    before = len(re.findall(r"con: nova> ps\n", read_log(serial)))
     type_text(qmp, "ps\n")
-    if not wait_for(r"con: no user processes running"):
-        return "processes are still listed after they all finished"
+    if not wait_for(r"con:   pid \d+ +nsh"):
+        return "ps did not list the shell (nsh is a user process)"
+    time.sleep(0.5)
+    after_ps = read_log(serial).split("con: nova> ps\n")[before + 1] if before + 1 < len(read_log(serial).split("con: nova> ps\n")) else ""
+    listed = re.findall(r"con:   pid \d+ +(\S+)", after_ps.split("con: nova>")[0])
+    if listed != ["nsh"]:
+        return f"after they all finished, ps should list only the shell, got {listed}"
 
     # Memory: ten more processes must not leak frames.
     mid = free_frames()
@@ -391,7 +400,7 @@ def disk_test(qmp, serial, phase, kind="sata") -> str | None:
         steps = [
             (f"format {idx} erase", r"con: formatted disk \d+ with NovaFS"),
             ("mounts", r"con: +/ +novafs"),
-            ("install", r"con: installed 10 programs in /bin"),
+            ("install", r"con: installed \d+ programs in /bin"),
             ("mkdir /docs", None),
             ("write /docs/note.txt persistent hello world", r"con: wrote \d+ bytes to /docs/note.txt"),
             ("cat /docs/note.txt", r"con: persistent hello world"),
@@ -676,6 +685,110 @@ def desktop_test(qmp, serial) -> str | None:
     return None
 
 
+def nsh_test(qmp, serial) -> str | None:
+    """The shell is a user program: built-ins, cd affecting the programs it
+    starts, pipelines of two and three programs, background jobs, Ctrl+C
+    ending a program that reads the keyboard, and exit restarting the shell."""
+
+    def log():
+        return read_log(serial)
+
+    def wait_for(pattern, seconds=15):
+        end = time.time() + seconds
+        while time.time() < end:
+            m = re.search(pattern, log())
+            if m:
+                return m
+            time.sleep(0.1)
+        return None
+
+    def output_of(command, seconds=15):
+        """Types `command`, then an end marker, and returns the console lines in between
+        (the shell runs one command at a time, so that is exactly what `command` printed)."""
+        output_of.n = getattr(output_of, "n", 0) + 1
+        marker = f"con: nova> {command}\n"
+        done = f"con: end-{output_of.n}\n"
+        before = log().count(marker)
+        type_text(qmp, command + "\n")
+        type_text(qmp, f"echo end-{output_of.n}\n")
+        end = time.time() + seconds
+        while time.time() < end:
+            text = log()
+            parts = text.split(marker)
+            if len(parts) > before + 1 and done in parts[before + 1]:
+                block = parts[before + 1].split(f"con: nova> echo end-{output_of.n}\n")[0]
+                return [l[5:] for l in block.splitlines() if l.startswith("con: ") and not l.startswith("con: (input)")]
+            time.sleep(0.1)
+        return None
+
+    if not wait_for(r"shell: ready \(nsh, a user program, is process \d+\)"):
+        return "the shell (nsh) never started as a user process"
+    if not wait_for(r"con: Nova shell \(nsh, a user program\)"):
+        return "nsh did not greet"
+
+    out = output_of("install")
+    if not out or not re.search(r"installed (\d+) programs", " ".join(out)):
+        return f"install: {out}"
+    programs = int(re.search(r"installed (\d+) programs", " ".join(out)).group(1))
+
+    out = output_of("ls /bin | grep ns")
+    if out is None or [l.split()[-1] for l in out] != ["nsh"]:
+        return f"'ls /bin | grep ns' should print just nsh, got {out}"
+    out = output_of("ls /bin | wc")
+    if not out or not out[0].startswith(f"{programs} lines,"):
+        return f"'ls /bin | wc' should count {programs} lines, got {out}"
+    out = output_of("ls /bin | grep e | wc")
+    with_e = sum(1 for n in ["cat", "counter", "crash", "evil", "fsbig", "fsdemo", "greet", "grep", "hello", "ls", "memtest", "nsh", "wc"] if "e" in n)
+    if not out or not out[0].startswith(f"{with_e} lines,"):
+        return f"'ls /bin | grep e | wc' should count {with_e} lines, got {out}"
+
+    out = output_of("cd /bin")
+    out = output_of("pwd")
+    if out != ["/bin"]:
+        return f"pwd after cd /bin: {out}"
+    out = output_of("ls | grep nsh")
+    if not out or "nsh" not in out[0]:
+        return f"a program started after 'cd /bin' should list /bin, got {out}"
+    out = output_of("cd /nope")
+    if out != ["cd: /nope: no such file or directory"]:
+        return f"cd to a missing folder: {out}"
+    output_of("cd /")
+
+    out = output_of("hello &")
+    if not out or not re.match(r"\[process \d+ \(hello\) started in the background\]", out[0]):
+        return f"a background job: {out}"
+    if not wait_for(r"\[process \d+ \(hello\) exited with code 0\]"):
+        return "the background job's end was not reported"
+
+    # A program reading the keyboard ends at Ctrl+C (end of input) instead of hanging the Terminal.
+    type_text(qmp, "grep x\n")
+    time.sleep(0.8)
+    qmp.cmd("input-send-event", events=[
+        {"type": "key", "data": {"down": True, "key": {"type": "qcode", "data": "ctrl"}}},
+        {"type": "key", "data": {"down": True, "key": {"type": "qcode", "data": "c"}}},
+        {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": "c"}}},
+        {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": "ctrl"}}},
+    ])
+    if not wait_for(r"con: \[grep exited with code 1\]"):
+        return "Ctrl+C did not end a program that was reading the keyboard"
+
+    before = len(re.findall(r"shell: ready \(nsh", log()))
+    type_text(qmp, "exit\n")
+    end = time.time() + 10
+    while time.time() < end and len(re.findall(r"shell: ready \(nsh", log())) <= before:
+        time.sleep(0.1)
+    if len(re.findall(r"shell: ready \(nsh", log())) <= before:
+        return "after 'exit' the Terminal did not start a new shell"
+    time.sleep(0.5)
+    out = output_of("echo still here")
+    if out != ["still here"]:
+        return f"the restarted shell: {out}"
+    out = output_of("ps")
+    if not out or not any(re.match(r"  pid \d+ +nsh", l) for l in out):
+        return f"ps should list the shell: {out}"
+    return None
+
+
 def main() -> int:
     import argparse
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -689,6 +802,7 @@ def main() -> int:
     ap.add_argument("--disk-kind", choices=sorted(DISK_KINDS), default="sata", help="which disk the storage test uses")
     ap.add_argument("--no-ps2", action="store_true", help="a machine without a PS/2 controller (like most laptops): USB is the only input")
     ap.add_argument("--nvme-block", type=int, choices=(512, 4096), default=512, help="sector size of the virtual NVMe disk")
+    ap.add_argument("--nsh", action="store_true", help="the user-space shell: pipelines, cd, background jobs, Ctrl+C, exit")
     ap.add_argument("--desktop", action="store_true", help="use the desktop: launcher, Files, dragging, focus, System, taskbar")
     ap.add_argument("--usb", action="store_true", help="attach a USB keyboard + mouse (QEMU input goes to them) and test USB")
     ap.add_argument("--fresh-disk", action="store_true", help="start from a blank virtual disk")
@@ -769,6 +883,14 @@ def main() -> int:
                 reason = "USB test: " + problem
             else:
                 print("USB: keyboard and mouse found, typing and pointing came through USB, unplug + replug worked")
+
+        if ok and opts.nsh and not opts.expect:
+            problem = nsh_test(qmp, serial)
+            if problem:
+                ok = False
+                reason = "nsh test: " + problem
+            else:
+                print("nsh: built-ins, cd, pipelines (2 and 3 programs), background jobs, Ctrl+C and exit/restart all worked")
 
         if ok and opts.desktop and not opts.expect:
             problem = desktop_test(qmp, serial)

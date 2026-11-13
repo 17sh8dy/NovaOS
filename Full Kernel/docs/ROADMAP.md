@@ -14,9 +14,39 @@ Each stage ends with something that boots and is checked by `tools\test.ps1`.
 | 8 | User space ✅ | Ring 3, system calls, ELF programs (built into the kernel until stage 9 gives us a disk) |
 | 9 | Storage + files ✅ | AHCI + NVMe drivers, a filesystem, a VFS |
 | 9b | Real-hardware input ✅ | xHCI USB: keyboards + mice (boot protocol), hot plug, works with no PS/2 controller |
-| 10 | Nova desktop + shell | 10a ✅ the Nova desktop (windows, taskbar, launcher; Terminal, Files, System). 10b: the shell as a user program |
+| 10 | Nova desktop + shell ✅ | 10a: the Nova desktop (windows, taskbar, launcher; Terminal, Files, System). 10b: the shell is a user program (`nsh`) with pipes and background jobs |
 
 Later: USB hubs and storage, networking, GPU, real-hardware testing on a USB stick.
+
+## Stage 10b notes: the shell as a user program
+
+* **`user/src/bin/nsh.rs`**: the shell people type into is now an ordinary ring-3 program (no heap, fixed
+  buffers). Built-ins `cd pwd echo run spawn help exit`; any other word runs a program (`/bin/NAME`, a
+  built-in image, or a path) and waits for it; `a | b | c` connects programs with pipes; a trailing `&`
+  runs it in the background; anything that is not a program goes to the kernel's system commands.
+  New programs `grep [-v] TEXT` and `wc` read standard input, so pipelines are useful.
+* **System calls 16-22:** `spawn(command, stdin_fd, stdout_fd, flags)` (5 arguments: `r8` is now read),
+  `wait(pid)`, `pipe()`, `chdir`, `getcwd`, `readline(prompt)` (the Terminal's line editor *with history*,
+  like a TTY in cooked mode; Ctrl+C = -EINTR) and `ctl(command)`: runs one of the kernel's system commands
+  (`disks format mem ps install fscheck usb reboot ...`, i.e. the old kernel shell's built-ins) for the
+  caller, resolving paths against the caller's working directory. They print to the console, so `ctl`
+  output cannot be piped yet.
+* **Processes:** one descriptor table per process (`Fd::Console | File | PipeIn | PipeOut`, 0-2 start as the
+  console; a child's 0/1 can be pipe ends); the working directory can change and is inherited; children a
+  parent `wait`s for are registered (with their thread handle, so a child that ends at once still reports
+  its code) and the kernel no longer announces *their* exits, the shell does. `pipe.rs`: 4 KiB buffer,
+  readers/writers sleep (`park`) and wake each other; an end closes when its last descriptor does, so EOF
+  and broken pipes work. Reading the console returns end-of-file on Ctrl+C, so `grep x` typed by mistake
+  can be stopped.
+* **Terminal:** a kernel thread starts `nsh` (logs `shell: ready (nsh, a user program, is process N)`) and
+  starts a new one when it exits; if `nsh` can't run, the old in-kernel shell loop takes over.
+* **Tests:** the existing shell, disk and user-space tests now all run through `nsh` unchanged (except: `ps`
+  lists the shell itself; `install` copies 13 programs). `boot_test.py --nsh`: pipelines of 2 and 3
+  programs with exact counts, `cd` inherited by a child, `cd` errors, a background job, Ctrl+C ending a
+  program reading the keyboard, `exit` restarting the shell.
+* Gaps: no signals (Ctrl+C can't stop a program that isn't reading the keyboard), no redirection (`>`,
+  `<`), no environment variables or `$?`, built-ins can't be in a pipeline, `ctl` commands print straight to
+  the console, a background program reading the keyboard competes with the shell.
 
 ## Stage 10a notes: the Nova desktop
 
