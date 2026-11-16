@@ -35,3 +35,12 @@ pub fn now() -> Option<DateTime> {
     }
     None
 }
+
+/// The raw seconds register (BCD or binary), or None while the clock is updating it.
+/// For the crash path, which only needs to see it change: no interrupts, no allocation.
+pub fn seconds_raw() -> Option<u8> {
+    if reg(rtc::STATUS_A) & rtc::UPDATING != 0 {
+        return None;
+    }
+    Some(reg(rtc::SECONDS))
+}

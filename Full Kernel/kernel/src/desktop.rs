@@ -266,7 +266,10 @@ pub fn run(irq_mode: bool) -> ! {
         kprintln!("desktop: ready; launcher at ({}, {})", l.0, l.1);
     }
 
+    crate::safety::heartbeat();
+    crate::faults::desktop_hang_if_requested();
     loop {
+        crate::safety::heartbeat();
         if !irq_mode {
             ps2::pump();
         }

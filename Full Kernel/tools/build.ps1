@@ -21,6 +21,13 @@
   A kernel that never starts the SATA/NVMe drivers (no disk controller is
   touched at all). Meant for the first boot on a real PC.
 
+.PARAMETER Safe
+  The safety net, for a first run on a real PC: "-Safe 30" resets the PC 30 seconds
+  after a crash (a PS/2 key press stops the countdown); a boot that has not reached
+  READY after 90 s, or a desktop frozen for 30 s, counts as a crash. "-Safe 30,90,45"
+  sets crash, boot and desktop seconds. Nothing is written anywhere; the PC is only reset.
+  Off by default (the QEMU tests rely on a crash screen that stays up).
+
 .PARAMETER X2Apic
   TEST: the kernel switches the local APICs to x2APIC mode itself (what some
   firmware hands over), so QEMU exercises that code path.
@@ -29,9 +36,9 @@
   TEST: put the other CPUs' start-up code on this page below 1 MiB (hex page
   number, e.g. 70 = 0x70000) instead of 0x8000, to prove it can live anywhere.
 #>
-param([switch]$DebugBuild, [string]$Fault = '', [switch]$NoDisks, [switch]$X2Apic, [string]$ApPage = '')
+param([switch]$DebugBuild, [string]$Fault = '', [switch]$NoDisks, [string]$Safe = '', [switch]$X2Apic, [string]$ApPage = '')
 
-$buildFlags = @{ NOVA_FAULT = $Fault; NOVA_NO_DISKS = $(if ($NoDisks) { '1' } else { '' }); NOVA_X2APIC = $(if ($X2Apic) { '1' } else { '' }); NOVA_AP_PAGE = $ApPage }
+$buildFlags = @{ NOVA_FAULT = $Fault; NOVA_NO_DISKS = $(if ($NoDisks) { '1' } else { '' }); NOVA_SAFE = $Safe; NOVA_X2APIC = $(if ($X2Apic) { '1' } else { '' }); NOVA_AP_PAGE = $ApPage }
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -48,6 +55,7 @@ try {
     }
     if ($Fault) { Write-Host "TEST KERNEL: it will fault on purpose ($Fault)" -ForegroundColor Yellow }
     if ($NoDisks) { Write-Host 'NO-DISKS kernel: the SATA/NVMe drivers will not start' -ForegroundColor Yellow }
+    if ($Safe) { Write-Host "SAFETY NET on ($Safe): a crash or a stuck boot/desktop resets the PC after the countdown" -ForegroundColor Yellow }
     if ($X2Apic) { Write-Host 'TEST KERNEL: switches to x2APIC mode' -ForegroundColor Yellow }
     if ($ApPage) { Write-Host "TEST KERNEL: CPU start-up code on page 0x$ApPage" -ForegroundColor Yellow }
     cargo build @cargoFlags -p nova-kernel --target x86_64-unknown-none

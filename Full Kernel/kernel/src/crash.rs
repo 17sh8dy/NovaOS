@@ -86,6 +86,8 @@ impl Report {
 
     /// Draws the report, if there is a screen to draw on.
     pub fn show(self) {
+        // Nothing logged from here on may be drawn over the crash screen (serial still gets it).
+        crate::log::set_mirror(None);
         let Some((fb, virt)) = SCREEN.with(|s| *s) else { return };
         // SAFETY: the crash path never returns, so nothing else draws any more;
         // `virt` was registered by the kernel as the framebuffer's mapping.
@@ -129,6 +131,21 @@ impl Report {
             }
         }
     }
+}
+
+/// Draws a one-line status box in the top-right corner of the crash screen
+/// (the safety net's countdown). Safe to call repeatedly: it repaints its box.
+pub fn banner(text: &str) {
+    let Some((fb, virt)) = SCREEN.with(|s| *s) else { return };
+    // SAFETY: as in `Report::show`: the crash path never returns to normal drawing.
+    let mut s = unsafe { Screen::new(fb, virt) };
+    let scale = (s.height() / 400).min(s.width() / (font::WIDTH + 1) / 90).max(1);
+    let w = (text.len() + 2) * (font::WIDTH + 1) * scale;
+    let h = (font::HEIGHT + 6) * scale;
+    let x = s.width().saturating_sub(w + 24 * scale);
+    let y = 20 * scale;
+    s.fill_rect(x, y, w, h, Rgb(0x10, 0x30, 0x18));
+    s.text(x + (font::WIDTH + 1) * scale, y + 3 * scale, scale, Rgb(0xB8, 0xFF, 0xC8), text);
 }
 
 /// A fixed-capacity string buffer that silently truncates.

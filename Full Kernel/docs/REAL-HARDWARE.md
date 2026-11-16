@@ -44,6 +44,34 @@ review (a registered organisation, an EV code-signing certificate, SBAT
 upkeep). Not needed for our own machines. NovaBoot already carries the
 `.sbat` section shim requires (`boot/src/sbat.rs`).
 
+## The safety net (build with `-Safe`)
+
+For a first boot on a real PC build the stick's kernel with the safety net:
+
+    tools\build.ps1 -NoDisks -Safe 30
+
+* **A crash** (exception or panic) shows the crash screen with a green box in the
+  corner counting down from 30 s, then **resets the PC**. The firmware starts over
+  with the boot order it already had: Windows, if the Nova stick is only ever
+  booted from the one-time boot menu (F8 on ASUS) and was not made the first boot
+  device. Photograph the screen during the count: that is the bug report.
+* **A PS/2 key press stops the countdown** and leaves the screen up. USB keyboards
+  cannot stop it (the crash path does not run the USB driver): that is why the
+  count is 30 s, long enough for a photo.
+* **A boot that has not printed READY after 90 s**, or a **desktop that has not
+  run for 30 s**, is treated as a crash (same screen, same countdown). The check
+  runs from the timer interrupt, so it also catches hangs inside drivers; it can
+  not catch a hang before the timer starts (power button then) or one with
+  interrupts off.
+* `-Safe 30,90,45` sets crash, boot and desktop seconds. Nothing is ever written:
+  the only thing the safety net does to the PC is reset it.
+* The reset tries the chipset reset register (port 0xCF9), then the keyboard
+  controller pulse, then a triple fault. Only the QEMU reset is tested; real AMD
+  hardware is not. If the reset does nothing, hold the power button.
+* If the firmware ever boots the stick first, a crash would loop: remove the stick.
+  (Nova cannot count crashes across a reset without writing somewhere; it doesn't.)
+* Off by default: the QEMU tests rely on a crash screen that stays up.
+
 ## Before touching the Windows PC
 
 1. **Save the BitLocker recovery key** (admin PowerShell, while C: is unlocked):
@@ -61,7 +89,7 @@ upkeep). Not needed for our own machines. NovaBoot already carries the
 2. **Dell**, from a stick, `--no-disks` build first, then a normal build.
 3. **Main PC**, from a stick (shim + MOK), Secure Boot left ON, `-NoDisks` build first.
 
-During any test: F8/F12 boot menu only, never save BIOS changes, holding the
+Use `-NoDisks -Safe 30` for the first boots. During any test: F8/F12 boot menu only, never save BIOS changes, holding the
 power button is always safe, remove the stick and the PC boots as before.
 If a BitLocker recovery screen ever appears: type the saved key.
 

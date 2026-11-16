@@ -28,3 +28,4 @@ nova-nvme = { path = "../crates/nvme" }
 nova-usb = { path = "../crates/usb" }
 nova-gfx = { path = "../crates/gfx" }
 nova-desktop = { path = "../crates/desktop" }
+nova-safety = { path = "../crates/safety" }

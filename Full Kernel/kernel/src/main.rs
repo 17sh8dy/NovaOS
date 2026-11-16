@@ -43,6 +43,7 @@ mod pci;
 mod pipe;
 mod pmm;
 mod rtc;
+mod safety;
 mod process;
 mod programs;
 mod ps2;
@@ -71,6 +72,7 @@ const READY_MARKER: &str = "NOVA KERNEL READY";
 #[unsafe(link_section = ".text._start")]
 pub unsafe extern "sysv64" fn _start(info: *const BootInfo) -> ! {
     log::init();
+    safety::init();
     kprintln!();
     kprintln!("Nova kernel {VERSION} (x86_64) - entered at {:#x}", _start as *const () as usize);
 
@@ -334,6 +336,7 @@ fn kmain(boot_copy: &'static BootInfo) -> ! {
         kprintln!("shell: needs interrupts and the scheduler; not started in polled mode");
     }
 
+    safety::mark_ready();
     kprintln!("{READY_MARKER}");
     if have_gui && (mouse || keyboard || usb_input) {
         desktop::run(irq_mode)
@@ -490,5 +493,5 @@ fn panic(p: &core::panic::PanicInfo) -> ! {
     }
     r.wrapped(format_args!("{}", p.message()));
     r.show();
-    nova_x86::halt_forever()
+    safety::after_crash()
 }

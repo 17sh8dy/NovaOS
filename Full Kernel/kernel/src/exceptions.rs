@@ -236,5 +236,5 @@ fn fatal(f: &ExceptionFrame) -> ! {
         r.line(format_args!("(the faulting RSP is itself inside IST stack {n})"));
     }
     r.show();
-    nova_x86::halt_forever()
+    crate::safety::after_crash()
 }

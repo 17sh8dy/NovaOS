@@ -71,6 +71,33 @@ try {
             & (Join-Path $PSScriptRoot 'build.ps1') -NoDisks
             python -I tools\boot_test.py --fresh-disk --shell --forbid 'ahci: disk' --forbid 'nvme: ' --expect 'NO-DISKS build' --expect 'no NovaFS on any disk' --expect 'shell: ready'
         }
+        # The safety net (build.ps1 -Safe): a crash, a boot that never finishes and a frozen
+        # desktop each end with the machine reset (QEMU runs with -no-reboot, so a reset
+        # makes it exit); a key press stops the countdown; a normal boot never trips it.
+        Step 'safety: a crash resets the machine' {
+            & (Join-Path $PSScriptRoot 'build.ps1') -Fault div -Safe 3
+            python -I tools\boot_test.py --shot safe_crash --expect 'NOVA KERNEL EXCEPTION' --expect 'safety: resetting the machine now' --expect-exit
+        }
+        Step 'safety: a panic resets the machine' {
+            & (Join-Path $PSScriptRoot 'build.ps1') -Fault panic -Safe 3
+            python -I tools\boot_test.py --shot safe_panic --expect 'NOVA KERNEL PANIC' --expect 'safety: resetting the machine now' --expect-exit
+        }
+        Step 'safety: a key press stops the countdown' {
+            & (Join-Path $PSScriptRoot 'build.ps1') -Fault panic -Safe 4
+            python -I tools\boot_test.py --shot safe_cancel --expect 'safety: restarting the machine in' --then-key
+        }
+        Step 'safety: a boot that never reaches READY resets the machine' {
+            & (Join-Path $PSScriptRoot 'build.ps1') -Fault hang -Safe '3,8,6'
+            python -I tools\boot_test.py --shot safe_bootstuck --expect 'NOVA WATCHDOG: BOOT STUCK' --expect 'safety: resetting the machine now' --expect-exit
+        }
+        Step 'safety: a frozen desktop resets the machine' {
+            & (Join-Path $PSScriptRoot 'build.ps1') -Fault deskhang -Safe '3,60,6'
+            python -I tools\boot_test.py --shot safe_deskstuck --expect 'NOVA WATCHDOG: DESKTOP STUCK' --expect 'safety: resetting the machine now' --expect-exit
+        }
+        Step 'safety on, normal use: never trips' {
+            & (Join-Path $PSScriptRoot 'build.ps1') -Safe '3,8,6'
+            python -I tools\boot_test.py --fresh-disk --mouse --shell --nsh --desktop --user --forbid 'safety: restarting' --forbid 'WATCHDOG' --shot safe_normal
+        }
     }
     finally {
         & (Join-Path $PSScriptRoot 'build.ps1')   # back to the normal kernel

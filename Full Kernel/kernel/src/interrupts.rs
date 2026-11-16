@@ -70,6 +70,7 @@ pub fn timer_tick() {
     if crate::cpu::this_cpu().id == 0 {
         let now = TICKS.fetch_add(1, Ordering::Relaxed) + 1;
         crate::sched::wake_sleepers(now);
+        crate::safety::on_tick(now);
     }
     crate::sched::tick();
 }

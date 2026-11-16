@@ -23,7 +23,17 @@
 
 use core::arch::asm;
 
-pub const KINDS: [&str; 15] = ["div", "ud", "gp", "pf", "df", "stack", "nmi", "panic", "null", "lowmem", "ro", "nx", "stray", "tdiv", "tstack"];
+pub const KINDS: [&str; 16] = ["div", "ud", "gp", "pf", "df", "stack", "nmi", "panic", "null", "lowmem", "ro", "nx", "stray", "tdiv", "tstack", "deskhang"];
+
+/// The desktop loop freezes (interrupts still on): the safety net's "desktop stuck" case.
+pub fn desktop_hang_if_requested() {
+    if option_env!("NOVA_FAULT") == Some("deskhang") {
+        crate::kprintln!("fault-test: the desktop loop hangs here on purpose");
+        loop {
+            nova_x86::sti_hlt();
+        }
+    }
+}
 
 unsafe extern "C" {
     static __text_start: u8;
@@ -64,7 +74,7 @@ pub fn run_late_if_requested() {
 
 pub fn run_if_requested() {
     let Some(kind) = option_env!("NOVA_FAULT") else { return };
-    if matches!(kind, "tdiv" | "tstack" | "hang") {
+    if matches!(kind, "tdiv" | "tstack" | "hang" | "deskhang") {
         return; // runs later (in a thread, or after the CPUs are up)
     }
     crate::kprintln!("fault-test: deliberately triggering '{kind}'");

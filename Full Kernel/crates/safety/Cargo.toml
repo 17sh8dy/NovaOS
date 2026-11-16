@@ -1,0 +1,6 @@
+[package]
+name = "nova-safety"
+description = "The safety net: when to give up on a stuck or crashed Nova and hand the PC back (pure logic)."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true

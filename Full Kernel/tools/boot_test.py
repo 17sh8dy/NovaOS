@@ -805,6 +805,8 @@ def main() -> int:
     ap.add_argument("--disk-kind", choices=sorted(DISK_KINDS), default="sata", help="which disk the storage test uses")
     ap.add_argument("--no-ps2", action="store_true", help="a machine without a PS/2 controller (like most laptops): USB is the only input")
     ap.add_argument("--nvme-block", type=int, choices=(512, 4096), default=512, help="sector size of the virtual NVMe disk")
+    ap.add_argument("--expect-exit", action="store_true", help="after the --expect text appears, QEMU must also exit by itself (the guest reset the machine; QEMU runs with -no-reboot)")
+    ap.add_argument("--then-key", action="store_true", help="after the --expect text appears, press a key and require 'restart stopped' in the log and QEMU still running")
     ap.add_argument("--nsh", action="store_true", help="the user-space shell: pipelines, cd, background jobs, Ctrl+C, exit")
     ap.add_argument("--desktop", action="store_true", help="use the desktop: launcher, Files, dragging, focus, System, taskbar")
     ap.add_argument("--usb", action="store_true", help="attach a USB keyboard + mouse (QEMU input goes to them) and test USB")
@@ -838,12 +840,14 @@ def main() -> int:
                 time.sleep(1.0)
                 ok = True
                 break
-            failed = next((f for f in FAILURES if f in log), None)
+            # A failure string the test itself expects (e.g. a panic that the safety net then
+            # resets) is not a failure; keep waiting for the rest of the expected text.
+            failed = next((f for f in FAILURES if f in log and not any(f in e for e in (opts.expect or []))), None)
             if failed:
                 time.sleep(0.5)  # let the rest of the message arrive
                 reason = f"saw failure: {failed!r}"
                 break
-            if all(m in log for m in MUST_SEE):
+            if not opts.expect and all(m in log for m in MUST_SEE):
                 ok = True
                 break
             if proc.poll() is not None:
@@ -851,6 +855,32 @@ def main() -> int:
                 break
             time.sleep(0.25)
         elapsed = time.time() - started
+
+        if ok and opts.expect_exit:
+            end = time.time() + 40
+            while proc.poll() is None and time.time() < end:
+                time.sleep(0.25)
+            if proc.poll() is None:
+                ok = False
+                reason = "the guest never reset the machine (QEMU is still running)"
+            else:
+                print("The guest reset the machine: QEMU exited by itself")
+
+        if ok and opts.then_key:
+            press(qmp, "a")
+            end = time.time() + 15
+            while "restart stopped by a key press" not in read_log(serial) and time.time() < end:
+                time.sleep(0.25)
+            if "restart stopped by a key press" not in read_log(serial):
+                ok = False
+                reason = "a key press did not stop the restart countdown"
+            else:
+                time.sleep(6)  # longer than the (short) test countdown: it must NOT reset now
+                if proc.poll() is not None:
+                    ok = False
+                    reason = "QEMU exited even though the countdown was stopped"
+                else:
+                    print("A key press stopped the countdown and the machine stayed up")
 
         for text in opts.forbid or []:
             if ok and text in read_log(serial):
