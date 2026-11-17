@@ -35,6 +35,13 @@ The enrolled key lives in shim's MokList variable, **not** in the firmware's
 Secure Boot database (db/KEK/PK), so the Secure Boot policy Windows measures
 for BitLocker (TPM PCR 7) should not change. Have the recovery key anyway.
 
+**shim's PE loader is stricter than the firmware's.** NovaBoot must have no section that is flagged
+"initialised data" yet has no bytes in the file (lld leaves that for all-zero statics in `.data`). shim then
+shows "Verification failed: (0x3) Unsupported" before MokManager (the serial log says "Section N is inside
+image headers"). `tools/pefix.py` (run by `build.ps1`/`build.sh` before signing) marks such a section as BSS.
+If shim ever shows `Unsupported` again, run `qemu-test.sh` on the Dell and read `build/sb-test/*.log`: a
+key-not-enrolled refusal says "Security Violation", anything else is a file-format problem.
+
 `tools/secureboot/qemu-test.sh` checks all of this in QEMU with Secure Boot
 enforcing and Microsoft's keys: refused without the key, boots with it, and
 refuses a tampered NovaBoot.

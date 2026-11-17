@@ -38,6 +38,7 @@ cargo build --release -p nova-kernel --target x86_64-unknown-none
 
 mkdir -p build/esp/EFI/BOOT build/esp/NOVA
 cp -f target/x86_64-unknown-uefi/release/nova-boot.efi build/esp/EFI/BOOT/BOOTX64.EFI
+python3 -I tools/pefix.py build/esp/EFI/BOOT/BOOTX64.EFI
 cp -f target/x86_64-unknown-none/release/nova-kernel build/esp/NOVA/KERNEL.ELF
 [ -n "${NOVA_NO_DISKS:-}" ] && echo "NO-DISKS kernel: the SATA/NVMe drivers will not start"
 echo "Boot volume ready: build/esp"

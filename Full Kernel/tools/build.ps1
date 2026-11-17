@@ -64,6 +64,8 @@ try {
     $esp = Join-Path $root 'build\esp'
     New-Item -ItemType Directory -Force -Path (Join-Path $esp 'EFI\BOOT'), (Join-Path $esp 'NOVA') | Out-Null
     Copy-Item -Force "target\x86_64-unknown-uefi\$buildProfile\nova-boot.efi" (Join-Path $esp 'EFI\BOOT\BOOTX64.EFI')
+    python -I tools\pefix.py (Join-Path $esp 'EFI\BOOT\BOOTX64.EFI')
+    if ($LASTEXITCODE -ne 0) { throw 'pefix failed' }
     Copy-Item -Force "target\x86_64-unknown-none\$buildProfile\nova-kernel" (Join-Path $esp 'NOVA\KERNEL.ELF')
 
     Write-Host "Boot volume ready: $esp ($buildProfile)"

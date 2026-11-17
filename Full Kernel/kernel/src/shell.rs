@@ -478,7 +478,22 @@ pub fn execute(line: &str) {
 /// it again if it ends. Falls back to the kernel's own shell if it can't.
 pub fn terminal() {
     gui::end_boot_log();
+    // Keep the USB start-up lines on screen: on real hardware they are the only way to see why a
+    // keyboard or mouse does not work (a photo of this window is the bug report).
+    let mut usb_lines: alloc::vec::Vec<String> = alloc::vec::Vec::new();
+    crate::log::recent(|l| {
+        if l.starts_with("xhci") || l.starts_with("usb") {
+            usb_lines.push(String::from(l));
+        }
+    });
     gui::with_console(|g| g.clear());
+    if usb_lines.is_empty() {
+        out("usb: no xhci/usb log lines (no USB controller was started)\n", COLOR_ERROR);
+    }
+    for l in &usb_lines {
+        out(l, COLOR_DIM);
+        out("\n", COLOR_DIM);
+    }
     let mut restarts = 0;
     loop {
         match process::spawn_with("nsh", "", None, None, true) {
