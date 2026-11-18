@@ -17,7 +17,7 @@ Each stage ends with something that boots and is checked by `tools\test.ps1`.
 | 10 | Nova desktop + shell ✅ | 10a: the Nova desktop (windows, taskbar, launcher; Terminal, Files, System). 10b: the shell is a user program (`nsh`) with pipes and background jobs |
 | 11 | Login + desktop polish ✅ | Password lock screen (at boot, Lock, Ctrl+Alt+L, `lock`/`passwd`), salted PBKDF2 records, hover highlights, Alt+Tab, Restart |
 | 12 | Apps + window sizing ✅ | Calculator, Notes, Settings (from scratch); maximise/restore and resize for every window (the Terminal's grid follows); idle auto-lock; the `/system` folder |
-| 13 | Real-hardware USB input | Keyboard and mouse work on the ASUS PC (needs the on-screen `xhci:`/`usb:` log from the diagnostic stick) |
+| 13 | Real-hardware USB input ✅ | Keyboard and mouse work on the ASUS PC (the mouse needed its HID report descriptor read: `crates/usb/src/report.rs`) |
 | 14 | Networking | NIC driver (virtio-net in QEMU, then the PC's Realtek RTL8111), Ethernet/ARP/IPv4/UDP/TCP, DHCP, DNS, an HTTP client; tested in QEMU first |
 | 15 | **Integrating Vexa** | See "Vexa on Nova" below |
 

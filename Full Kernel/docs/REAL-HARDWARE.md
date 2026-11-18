@@ -1,7 +1,7 @@
 # Booting Nova on a real PC
 
-Nova boots on the ASUS PC (Secure Boot ON, shim + MOK) to its desktop; USB keyboard and mouse input does
-not work there yet (see `docs/START-HERE.md`). This is the plan for real boots, written
+Nova boots on the ASUS PC (Secure Boot ON, shim + MOK) to its desktop, and USB keyboard and mouse work
+there (confirmed 2026-11-18; see `docs/START-HERE.md`). This is the plan for real boots, written
 for two machines: a **Dell running Ubuntu** (first) and the **main Windows PC**
 (ASUS PRIME B550-PLUS, Ryzen 9 5950X, RX 7800 XT, BitLocker on C:). Rule one:
 **no firmware setting is changed and no disk is written.**
@@ -118,9 +118,8 @@ If a BitLocker recovery screen ever appears: type the saved key.
 * **GPU framebuffer:** on this PC it is at 0xD0000000 (below 4 GiB). With
   Resizable BAR it can be far higher; NovaBoot now maps it wherever it is
   (up to 32 TiB).
-* **Login password (`build.ps1 -Password`):** the stick's desktop starts locked. Only build it once the
-  keyboard is known to work on that PC (a PS/2 keyboard, or USB once it works there); otherwise the lock
-  screen cannot be passed. Nothing is written: the password record lives inside KERNEL.ELF.
+* **Login password (`build.ps1 -Password`):** the stick's desktop starts locked. The USB keyboard works on
+  the ASUS, so this is usable there; on a new PC, check the keyboard first, or the lock screen cannot be passed. Nothing is written: the password record lives inside KERNEL.ELF.
 * **Keyboard/mouse:** no USB hub support yet: use the rear USB ports on the
   motherboard (not front panel, monitor or dock), or a PS/2 keyboard.
 * **32 threads:** supported (limit 64).

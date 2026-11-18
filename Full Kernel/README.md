@@ -152,7 +152,7 @@ the guest CPU starts, even with no guest at all
 so it is a QEMU/Windows build problem, not Nova. WHPX is also much faster (a
 boot takes ~1.3 s). To use TCG on another machine: `$env:NOVA_ACCEL = 'tcg'`.
 
-## Booting a real PC (boots on the ASUS; USB input not working yet)
+## Booting a real PC (works on the ASUS, Secure Boot ON)
 
 **Read [docs/REAL-HARDWARE.md](docs/REAL-HARDWARE.md) first**: the safe plan (Secure Boot left on via shim +
 MOK, no firmware changes, no disk writes, a `-NoDisks` build, BitLocker recovery key first).
@@ -161,7 +161,7 @@ Linux scripts: `tools/build.sh`, `tools/secureboot/` (make-key, make-stick, qemu
 
 The contents of `build\esp` are a complete UEFI boot volume; with Secure Boot ON (the way we do it) the
 stick also carries shim and a MOK-signed NovaBoot, built by `tools/secureboot/make-stick.sh`. Nova has
-booted to its desktop on the ASUS PC this way; USB keyboard/mouse input there is the open problem. What a
+booted to its desktop on the ASUS PC this way, with USB keyboard and mouse working. What a
 real PC needs that QEMU tests:
 an NVMe SSD (done), USB keyboard/mouse with no PS/2 port (done, tested in QEMU
 with the PS/2 controller switched off). Not yet: keyboards behind a USB hub
