@@ -8,6 +8,18 @@ detail; this page is the orientation + current state.
 Machine-specific details (the signing machine's address, drive letters, which PC) are NOT in git (public
 repo). They are in `LOCAL-NOTES.md` next to this folder's `README.md` (git-ignored). Read it too.
 
+## 2026-11-18: USB mouse fix (needs a real-PC check)
+
+* Photo of the diagnostic stick: both xHCI controllers start, the keyboard (Apex) works, the Razer Viper V3 Pro
+  mouse did not move the pointer. Its HID report descriptor showed why: buttons, **2 vendor bytes**, wheel,
+  then **16-bit X and Y**: not the 3-byte boot layout Nova assumed. Fix: `crates/usb/src/report.rs` parses the
+  mouse's report descriptor (host-tested with the Razer's real bytes) and `kernel/src/xhci.rs` decodes with it
+  (report protocol when the layout is understood, boot layout as fallback). The `usb` shell command shows
+  per-endpoint counters and the last raw report. **Not yet confirmed on the ASUS:** user boots the stick; look
+  for `usb: first motion from Razer Viper V3 Pro`. Also fixed: the scheduler stack-reuse self-test flaked on
+  many-CPU machines (a dead thread's stack returns to the pool a moment after `join` returns).
+* Still open: `port 2: could not read the device descriptor` on the second xHCI (0b:00.3); USB hubs.
+
 ## 2026-11-17 (later): stage 12, apps + window sizing (QEMU only)
 
 * Stages 11 (`8168f86`) and 12 (`c8406c7`) are committed and **pushed** to `full-kernel`. Stage 12: Calculator, Notes, Settings, maximise/resize,

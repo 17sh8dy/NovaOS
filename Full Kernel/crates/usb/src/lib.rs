@@ -24,6 +24,7 @@ extern crate std;
 pub mod context;
 pub mod desc;
 pub mod hid;
+pub mod report;
 pub mod trb;
 
 /// Port speeds as the xHCI reports them (PORTSC bits 10..13).

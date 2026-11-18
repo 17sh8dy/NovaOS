@@ -39,6 +39,7 @@ use core::sync::atomic::{Ordering, fence};
 use nova_usb::context::{self, Layout};
 use nova_usb::desc::{self, BootKind};
 use nova_usb::trb::{self, Consumer, Producer, Trb};
+use nova_usb::report::{self, MouseLayout};
 use nova_usb::{Speed, dci, hid, xhci_interval};
 
 // Capability registers.
@@ -158,7 +159,9 @@ impl Ring {
 
 enum Role {
     Keyboard { report: hid::Keyboard, pipeline: nova_kbd::Pipeline },
-    Mouse,
+    /// A mouse: where its fields are in a report (from its HID report descriptor), or `None`
+    /// to use the fixed boot-protocol layout.
+    Mouse(Option<MouseLayout>),
 }
 
 struct Endpoint {
@@ -308,8 +311,16 @@ impl Controller {
         ep.last = [0; 8];
         ep.last[..n].copy_from_slice(&data[..n]);
         ep.last_len = n as u8;
-        if data.iter().skip(1).take(2).any(|&b| b != 0) {
+        let mouse_event = match &ep.role {
+            Role::Mouse(Some(layout)) => Some(layout.decode(data)),
+            Role::Mouse(None) => Some(hid::mouse_report(data)),
+            Role::Keyboard { .. } => None,
+        };
+        if mouse_event.flatten().is_some_and(|m| m.dx != 0 || m.dy != 0) {
             ep.moving = ep.moving.wrapping_add(1);
+            if ep.moving == 1 {
+                crate::kprintln!("usb: first motion from {name}");
+            }
         }
         match &mut ep.role {
             Role::Keyboard { report, pipeline } => {
@@ -325,8 +336,8 @@ impl Controller {
                     crate::kprintln!("usb: first key from {name}");
                 }
             }
-            Role::Mouse => {
-                if let Some(m) = hid::mouse_report(data) {
+            Role::Mouse(_) => {
+                if let Some(m) = mouse_event.flatten() {
                     ps2::push_mouse(m);
                     if !ep.seen {
                         ep.seen = true;
@@ -524,25 +535,44 @@ impl Controller {
         }
 
         self.control(d, 0x00, desc::SET_CONFIGURATION, cfg.value as u16, 0, 0).map_err(|_| "Set Configuration failed")?;
+        // A mouse tells us where its fields are in its reports (its HID report descriptor). Many
+        // gaming mice do not use the 3-byte boot layout (the Razer Viper sends 16-bit X and Y after
+        // 3 other bytes), so the descriptor decides; the boot protocol is only the fallback.
+        let mut layouts: Vec<(u8, Option<MouseLayout>)> = Vec::new();
         for b in &boot {
-            // Boot protocol (fixed report layout). Some devices refuse SET_IDLE; that's fine.
-            let _ = self.control(d, 0x21, desc::HID_SET_PROTOCOL, 0, b.interface as u16, 0);
+            let mut layout = None;
+            if b.kind == BootKind::Mouse {
+                // SAFETY: the control page is ours; zeroed so a short answer leaves no stale bytes.
+                unsafe { core::ptr::write_bytes((direct() + self.devices[d].control_buf) as *mut u8, 0, 512) };
+                if self.control(d, 0x81, desc::GET_DESCRIPTOR, 0x2200, b.interface as u16, 256).is_ok() {
+                    let data = self.control_data(d, 256).to_vec();
+                    layout = report::parse_mouse(&data);
+                    match &layout {
+                        Some(l) => {
+                            let mut text = String::new();
+                            l.summary(&mut text);
+                            crate::kprintln!("usb: port {port}: mouse interface {}: {text}", b.interface);
+                        }
+                        None => {
+                            crate::kprintln!("usb: port {port}: mouse interface {}: unknown report layout, using the boot layout", b.interface);
+                            let end = data.iter().rposition(|&x| x != 0).map_or(0, |i| i + 1).clamp(1, 96);
+                            for (i, chunk) in data[..end].chunks(24).enumerate() {
+                                crate::kprintln!("usb: port {port} mouse desc +{:02x}: {}", i * 24, hex(chunk));
+                            }
+                        }
+                    }
+                } else {
+                    crate::kprintln!("usb: port {port}: mouse interface {}: could not read its report descriptor, using the boot layout", b.interface);
+                }
+            }
+            // Report protocol (the descriptor's layout) when we understand it, otherwise boot protocol
+            // (fixed layout). Some devices refuse these requests or SET_IDLE; that's fine.
+            let protocol = if layout.is_some() { 1 } else { 0 };
+            let _ = self.control(d, 0x21, desc::HID_SET_PROTOCOL, protocol, b.interface as u16, 0);
             if b.kind == BootKind::Keyboard {
                 let _ = self.control(d, 0x21, desc::HID_SET_IDLE, 0, b.interface as u16, 0);
             }
-        }
-
-        // What does each mouse interface really send? Log its HID report descriptor (diagnostic).
-        for b in boot.iter().filter(|b| b.kind == BootKind::Mouse) {
-            if self.control(d, 0x81, desc::GET_DESCRIPTOR, 0x2200, b.interface as u16, 128).is_ok() {
-                let data = self.control_data(d, 128).to_vec();
-                let end = data.iter().rposition(|&x| x != 0).map_or(0, |i| i + 1).clamp(1, 96);
-                for (i, chunk) in data[..end].chunks(24).enumerate() {
-                    crate::kprintln!("usb: port {port} mouse desc +{:02x}: {}", i * 24, hex(chunk));
-                }
-            } else {
-                crate::kprintln!("usb: port {port}: mouse interface {}: could not read its report descriptor", b.interface);
-            }
+            layouts.push((b.interface, layout));
         }
 
         // One interrupt-IN endpoint per boot interface.
@@ -563,7 +593,7 @@ impl Controller {
             max_dci = max_dci.max(ep_dci);
             let role = match b.kind {
                 BootKind::Keyboard => Role::Keyboard { report: hid::Keyboard::new(), pipeline: nova_kbd::Pipeline::new() },
-                BootKind::Mouse => Role::Mouse,
+                BootKind::Mouse => Role::Mouse(layouts.iter().find(|(i, _)| *i == b.interface).and_then(|(_, l)| *l)),
             };
             let report_len = (b.max_packet as u32).clamp(1, REPORT_BYTES as u32);
             endpoints.push((Endpoint { dci: ep_dci, ring, buffers, report_len, role, halted: false, errors: 0, seen: false, reports: 0, moving: 0, last: [0; 8], last_len: 0 }, b.max_packet, b.interval));
@@ -587,7 +617,7 @@ impl Controller {
             }
             kinds.push(match ep.role {
                 Role::Keyboard { .. } => "keyboard",
-                Role::Mouse => "mouse",
+                Role::Mouse(_) => "mouse",
             });
             let ep_dci = ep.dci;
             self.devices[d].endpoints.push(ep);
@@ -862,7 +892,7 @@ pub fn init(devices: &[pci::PciDevice]) -> Found {
             for e in &d.endpoints {
                 match e.role {
                     Role::Keyboard { .. } => found.keyboards += 1,
-                    Role::Mouse => found.mice += 1,
+                    Role::Mouse(_) => found.mice += 1,
                 }
             }
         }
