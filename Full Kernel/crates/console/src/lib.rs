@@ -178,6 +178,29 @@ impl Grid {
     pub fn mark_all_dirty(&mut self) {
         self.dirty.fill(true);
     }
+
+    /// Changes the grid's size, keeping the text: the rows ending at the
+    /// cursor's row stay (older rows are dropped from the top if it shrinks),
+    /// lines are cut on the right if it narrows.
+    pub fn resize(&mut self, cols: usize, rows: usize) {
+        let (cols, rows) = (cols.max(1), rows.max(1));
+        if (cols, rows) == (self.cols, self.rows) {
+            return;
+        }
+        let drop = (self.cy + 1).saturating_sub(rows);
+        let mut cells = alloc::vec![BLANK; cols * rows];
+        for r in 0..rows.min(self.rows - drop) {
+            for c in 0..cols.min(self.cols) {
+                cells[r * cols + c] = self.cells[(r + drop) * self.cols + c];
+            }
+        }
+        self.cells = cells;
+        self.cols = cols;
+        self.rows = rows;
+        self.dirty = alloc::vec![true; rows];
+        self.cy -= drop;
+        self.cx = self.cx.min(cols - 1);
+    }
 }
 
 /// A key the line editor understands (the kernel maps real key input onto this).
@@ -551,5 +574,27 @@ mod tests {
         let mut e = LineEditor::new();
         assert_eq!(e.handle(EditKey::Char('\u{7}')), Edit::Nothing);
         assert_eq!(e.text(), "");
+    }
+    #[test]
+    fn resize_keeps_the_text_near_the_cursor() {
+        let mut g = Grid::new(10, 4);
+        g.write_str("one
+two
+three
+four");
+        assert_eq!(g.cursor(), (4, 3));
+        g.resize(20, 6);
+        assert_eq!((g.cols(), g.rows()), (20, 6));
+        assert_eq!(g.cell(0, 0).ch, 'o');
+        assert_eq!(g.cursor(), (4, 3));
+        // Shrinking drops the oldest rows, not the line being typed.
+        g.resize(3, 2);
+        assert_eq!(g.cell(0, 0).ch, 't');
+        assert_eq!(g.cell(2, 0).ch, 'r', "cut on the right");
+        assert_eq!(g.cell(0, 1).ch, 'f');
+        assert_eq!(g.cursor(), (2, 1));
+        assert!((0..2).all(|r| g.is_dirty(r)));
+        g.write_str("!");
+        g.resize(3, 2);
     }
 }

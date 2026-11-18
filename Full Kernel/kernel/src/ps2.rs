@@ -93,6 +93,17 @@ static KEYS: SpinLock<KeyQueue> = SpinLock::new(KeyQueue { buf: [None; 64], head
 static UI_KEYS: SpinLock<KeyQueue> = SpinLock::new(KeyQueue { buf: [None; 64], head: 0, len: 0 });
 /// Whether typing goes to the shell (the Terminal window is focused) or to the desktop.
 static TERMINAL_FOCUS: AtomicBool = AtomicBool::new(true);
+/// Timer tick of the last key or mouse event (for locking after idle).
+static LAST_INPUT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+fn touched() {
+    LAST_INPUT.store(crate::interrupts::ticks(), Ordering::Relaxed);
+}
+
+/// Timer ticks since the last key or mouse event.
+pub fn idle_ticks() -> u64 {
+    crate::interrupts::ticks().saturating_sub(LAST_INPUT.load(Ordering::Relaxed))
+}
 static KBD: SpinLock<nova_kbd::Pipeline> = SpinLock::new(nova_kbd::Pipeline::new());
 /// Thread to wake when typed input arrives (usize::MAX = none).
 static KEY_WAITER: AtomicUsize = AtomicUsize::new(usize::MAX);
@@ -155,6 +166,7 @@ fn desktop_shortcut(i: &Input) -> bool {
 
 /// Queues a key for whoever has the focus. Returns true if it went to the shell.
 fn push_key(input: Input) -> bool {
+    touched();
     if TERMINAL_FOCUS.load(Ordering::SeqCst) && !desktop_shortcut(&input) {
         KEYS.with(|k| k.push(input));
         true
@@ -168,7 +180,10 @@ fn push_key(input: Input) -> bool {
 pub fn pump() {
     let mut typed = false;
     drain(
-        |ev| QUEUE.with(|q| q.push(ev)),
+        |ev| {
+            touched();
+            QUEUE.with(|q| q.push(ev))
+        },
         |input| {
             typed |= push_key(input);
         },
@@ -191,6 +206,7 @@ pub fn push_typed(input: Input) {
 
 /// Movement from another mouse (USB): queued for the desktop like PS/2 packets.
 pub fn push_mouse(ev: MouseEvent) {
+    touched();
     QUEUE.with(|q| q.push(ev));
 }
 

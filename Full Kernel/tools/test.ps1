@@ -84,7 +84,7 @@ try {
         }
         Step 'safety: a key press stops the countdown' {
             & (Join-Path $PSScriptRoot 'build.ps1') -Fault panic -Safe 4
-            python -I tools\boot_test.py --shot safe_cancel --expect 'safety: restarting the machine in' --then-key
+            python -I tools\boot_test.py --shot safe_cancel --expect 'NOVA KERNEL PANIC' --expect 'safety: restarting the machine in' --then-key
         }
         Step 'safety: a boot that never reaches READY resets the machine' {
             & (Join-Path $PSScriptRoot 'build.ps1') -Fault hang -Safe '3,8,6'
@@ -113,6 +113,7 @@ try {
     Step 'NVMe with 4 KiB sectors 1' { python -I tools\boot_test.py --fresh-disk --disk-phase 1 --disk-kind nvme --nvme-block 4096 }
     Step 'NVMe with 4 KiB sectors 2' { python -I tools\boot_test.py --disk-phase 2 --disk-kind nvme --nvme-block 4096 }
     Step 'normal boot + mouse + keyboard/shell + nsh + desktop' { python -I tools\boot_test.py --fresh-disk --mouse --shell --nsh --desktop --user --shot desktop }
+    Step 'apps: Calculator, Notes, Settings, maximise/resize, /system' { python -I tools\boot_test.py --fresh-disk --mouse --apps --shot apps }
     Step 'USB keyboard + mouse, no PS/2 (like a laptop), desktop' { python -I tools\boot_test.py --fresh-disk --no-ps2 --usb --mouse --shell --desktop --user --shot usb }
     Step 'USB at 6G (DMA above 4 GiB)' { python -I tools\boot_test.py --memory 6G --usb --mouse --shell }
 

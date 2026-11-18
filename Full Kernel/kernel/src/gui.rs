@@ -17,6 +17,9 @@ use alloc::vec::Vec;
 use nova_bootinfo::BootInfo;
 use nova_console::Grid;
 use nova_desktop::apps::FilesView;
+use nova_desktop::calc::Calculator;
+use nova_desktop::notes::Notes;
+use nova_desktop::settings::{SettingsView, THEMES};
 use nova_desktop::{Desktop, Event, PANEL};
 use nova_gfx::{Canvas, Color, Rect, cell_size, rgb};
 use nova_ps2::{Change, MouseEvent, Pointer};
@@ -32,13 +35,16 @@ const PALETTE: [Color; 4] = [rgb(0xE8, 0xEC, 0xFF), rgb(0x6E, 0xE7, 0xD8), rgb(0
 pub const TERMINAL: u32 = 1;
 pub const FILES: u32 = 2;
 pub const SYSTEM: u32 = 3;
+pub const NOTES: u32 = 4;
+pub const CALC: u32 = 5;
+pub const SETTINGS: u32 = 6;
 /// Launcher entries that are actions, not windows.
 pub const LOCK: u32 = 100;
 pub const PASSWORD: u32 = 101;
 pub const RESTART: u32 = 102;
 
 /// The line under the name on the wallpaper.
-pub const SUBTITLE: &str = "Full Kernel - Stage 11";
+pub const SUBTITLE: &str = "Full Kernel - Stage 12";
 
 pub struct Gui {
     screen: Screen,
@@ -50,6 +56,9 @@ pub struct Gui {
     term_pad: i32,
     blink_on: bool,
     pub files: FilesView,
+    pub calc: Calculator,
+    pub notes: Notes,
+    pub settings: SettingsView,
     /// Font scale for app content.
     pub scale: i32,
     pub boot_lines: Vec<(String, String)>,
@@ -106,6 +115,46 @@ impl Gui {
         self.desk.damage_content(FILES, all);
     }
 
+    pub fn render_calc(&mut self) {
+        let Some(c) = self.desk.content_mut(CALC) else { return };
+        self.calc.render(c);
+        let all = c.bounds();
+        self.desk.damage_content(CALC, all);
+    }
+
+    pub fn render_notes(&mut self) {
+        let title = self.notes.title();
+        self.desk.set_title(NOTES, &title);
+        let Some(c) = self.desk.content_mut(NOTES) else { return };
+        self.notes.render(c);
+        let all = c.bounds();
+        self.desk.damage_content(NOTES, all);
+    }
+
+    pub fn render_settings(&mut self) {
+        let Some(c) = self.desk.content_mut(SETTINGS) else { return };
+        self.settings.render(c);
+        let all = c.bounds();
+        self.desk.damage_content(SETTINGS, all);
+    }
+
+    /// Applies the wallpaper theme from the settings.
+    pub fn apply_theme(&mut self, theme: usize) {
+        let t = &THEMES[theme.min(THEMES.len() - 1)];
+        self.desk.set_wallpaper(t.top, t.bottom);
+    }
+
+    /// The Terminal window got a new size: the console grid follows it.
+    pub fn fit_terminal(&mut self) {
+        let (w, h) = self.content_size(TERMINAL);
+        let (cw, ch) = cell_size(self.term_scale);
+        let cols = ((w - 2 * self.term_pad) / cw).max(10) as usize;
+        let rows = ((h - 2 * self.term_pad) / ch).max(3) as usize;
+        self.grid.resize(cols, rows);
+        self.grid.mark_all_dirty();
+        self.render_console();
+    }
+
     /// Redraws the System window with these lines.
     pub fn render_system(&mut self, lines: &[(String, String)]) {
         let (scale, u) = (self.scale, self.desk.m.u);
@@ -150,6 +199,16 @@ pub fn init(screen: Screen, info: &BootInfo, free_mib: u64, cpus: usize) {
     desk.add_window(SYSTEM, "System", (sw, sh), (w as i32 / 2 - sw as i32 / 2 + 60 * u, 60 * u), PANEL);
     desk.close(FILES);
     desk.close(SYSTEM);
+    // Notes, Calculator and Settings, closed until launched.
+    let (nw, nh) = ((w as i32 * 55 / 100).max(420) as usize, (work.h * 62 / 100).max(300) as usize);
+    desk.add_window(NOTES, "Untitled - Notes", (nw, nh), (90 * u, 46 * u), PANEL);
+    let (cw0, ch0) = (330 * u as usize, (work.h * 66 / 100).clamp(380, 470 * u) as usize);
+    desk.add_window(CALC, "Calculator", (cw0, ch0), (w as i32 - cw0 as i32 - 60 * u, 40 * u), PANEL);
+    let (sw2, sh2) = ((560 * u) as usize, (work.h * 70 / 100).max(380) as usize);
+    desk.add_window(SETTINGS, "Settings", (sw2, sh2), (w as i32 / 2 - sw2 as i32 / 2, 36 * u), PANEL);
+    for id in [NOTES, CALC, SETTINGS] {
+        desk.close(id);
+    }
 
     // The Terminal: about two thirds of the screen.
     let term_scale = (2 * u).min(4);
@@ -159,12 +218,17 @@ pub fn init(screen: Screen, info: &BootInfo, free_mib: u64, cpus: usize) {
     let rows = ((work.h * 68 / 100) / ch).max(12) as usize;
     let (tx, ty) = (32 * u, 28 * u);
     desk.add_window(TERMINAL, "Terminal", (cols * cw as usize + 2 * pad as usize, rows * ch as usize + 2 * pad as usize), (tx, ty), PANEL);
+    for id in [TERMINAL, FILES, SYSTEM, NOTES, CALC, SETTINGS] {
+        desk.set_resizable(id, true);
+    }
     desk.set_menu(alloc::vec![
         (String::from("Terminal"), TERMINAL),
         (String::from("Files"), FILES),
+        (String::from("Notes"), NOTES),
+        (String::from("Calculator"), CALC),
+        (String::from("Settings"), SETTINGS),
         (String::from("System"), SYSTEM),
         (String::from("Lock"), LOCK),
-        (String::from("Password"), PASSWORD),
         (String::from("Restart"), RESTART),
     ]);
     desk.set_note(&alloc::format!("{cpus} CPU(s)"));
@@ -184,6 +248,9 @@ pub fn init(screen: Screen, info: &BootInfo, free_mib: u64, cpus: usize) {
         term_pad: pad,
         blink_on: true,
         files: FilesView::new(scale, u),
+        calc: Calculator::new(scale, u),
+        notes: Notes::new(scale, u),
+        settings: SettingsView::new(nova_desktop::settings::Settings::default(), scale, u),
         scale,
         boot_lines,
         desk,

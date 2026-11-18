@@ -25,7 +25,11 @@ extern crate std;
 use alloc::string::String;
 use alloc::vec::Vec;
 pub mod apps;
+pub mod calc;
 pub mod lock;
+pub mod notes;
+pub mod settings;
+pub mod ui;
 
 use lock::{Lock, LockKey, Mode, Outcome};
 
@@ -108,6 +112,25 @@ pub struct Window {
     pub state: State,
     /// What the application drew.
     pub content: Canvas,
+    /// Background of a fresh content canvas (after a resize).
+    pub fill: Color,
+    /// Can be maximised and resized (the app redraws on `Event::Resized`).
+    pub resizable: bool,
+    /// Where a maximised window goes back to.
+    pub restore: Option<Rect>,
+}
+
+/// Which edges a resize drags (bit 0 right, bit 1 bottom).
+pub const EDGE_RIGHT: u8 = 1;
+pub const EDGE_BOTTOM: u8 = 2;
+
+#[derive(Clone, Copy, Debug)]
+struct Resizing {
+    id: u32,
+    from: Rect,
+    start: (i32, i32),
+    edges: u8,
+    now: Rect,
 }
 
 /// What is under a point.
@@ -121,6 +144,9 @@ pub enum Hit {
     Title(u32),
     Close(u32),
     Minimize(u32),
+    Maximize(u32),
+    /// A resize edge or the bottom-right corner (`EDGE_*` bits).
+    Resize(u32, u8),
     Frame(u32),
     /// Inside a window's content, in content coordinates.
     Content(u32, i32, i32),
@@ -142,6 +168,8 @@ pub enum Event {
     Moved(u32, i32, i32),
     /// A click inside a window's content (content coordinates).
     Click(u32, i32, i32),
+    /// The window got a new size (maximised, restored or resized): its app must redraw.
+    Resized(u32),
 }
 
 pub struct Desktop {
@@ -166,6 +194,9 @@ pub struct Desktop {
     hover: Hit,
     /// The lock screen / password card, when shown (it covers everything).
     lock: Option<Lock>,
+    resizing: Option<Resizing>,
+    subtitle: String,
+    sky: (Color, Color),
 }
 
 impl Desktop {
@@ -190,16 +221,31 @@ impl Desktop {
             damage: Vec::new(),
             hover: Hit::Desktop,
             lock: None,
+            resizing: None,
+            subtitle: String::from(subtitle),
+            sky: (SKY_TOP, SKY_BOTTOM),
         };
-        d.paint_wallpaper(subtitle);
+        d.paint_wallpaper();
         d.damage_all();
         d
     }
 
-    fn paint_wallpaper(&mut self, subtitle: &str) {
+    /// New wallpaper colours (a Settings theme); repaints everything.
+    pub fn set_wallpaper(&mut self, top: Color, bottom: Color) {
+        if self.sky != (top, bottom) {
+            self.sky = (top, bottom);
+            self.paint_wallpaper();
+            self.damage_all();
+        }
+    }
+
+    fn paint_wallpaper(&mut self) {
         let (w, h, u) = (self.w, self.h, self.m.u);
+        let (sky_top, sky_bottom) = self.sky;
+        let subtitle = self.subtitle.clone();
+        let subtitle = subtitle.as_str();
         let wp = &mut self.wallpaper;
-        wp.gradient(SKY_TOP, SKY_BOTTOM);
+        wp.gradient(sky_top, sky_bottom);
         // A sprinkle of faint stars (a fixed pseudo-random pattern).
         let mut seed: u32 = 0x9E37_79B9;
         for _ in 0..(w * h / 9000).max(8) {
@@ -216,14 +262,14 @@ impl Desktop {
         let cx = w * 82 / 100;
         let cy = (h - self.m.taskbar_h) * 52 / 100;
         let r = 40 * u;
-        let glow = mix(SKY_BOTTOM, ACCENT, 70);
+        let glow = mix(sky_bottom, ACCENT, 70);
         wp.star(cx, cy - 30 * u, r, glow);
         let name = "NOVA OS";
         let s = 4 * u;
         let bounds = wp.bounds();
-        wp.text(cx - text_width(name, s) / 2, cy + r - 10 * u, s, mix(SKY_BOTTOM, INK, 90), name, bounds);
+        wp.text(cx - text_width(name, s) / 2, cy + r - 10 * u, s, mix(sky_bottom, INK, 90), name, bounds);
         let s2 = 2 * u;
-        wp.text(cx - text_width(subtitle, s2) / 2, cy + r + text_height(s) + 2 * u, s2, mix(SKY_BOTTOM, DIM, 120), subtitle, bounds);
+        wp.text(cx - text_width(subtitle, s2) / 2, cy + r + text_height(s) + 2 * u, s2, mix(sky_bottom, DIM, 120), subtitle, bounds);
     }
 
     pub fn width(&self) -> i32 {
@@ -306,9 +352,29 @@ impl Desktop {
         Rect::new(t.right() - s - 4 * self.m.u, t.y + 4 * self.m.u, s, s)
     }
 
-    fn minimize_rect(&self, w: &Window) -> Rect {
+    fn maximize_rect(&self, w: &Window) -> Option<Rect> {
         let c = self.close_rect(w);
+        w.resizable.then(|| c.offset(-(c.w + 4 * self.m.u), 0))
+    }
+
+    fn minimize_rect(&self, w: &Window) -> Rect {
+        let c = self.maximize_rect(w).unwrap_or_else(|| self.close_rect(w));
         c.offset(-(c.w + 4 * self.m.u), 0)
+    }
+
+    /// How far inside a resizable window's right and bottom edges a press resizes it.
+    fn grip(&self) -> i32 {
+        6 * self.m.u
+    }
+
+    /// The maximise button of a resizable window (screen coordinates).
+    pub fn maximize_button(&self, id: u32) -> Option<Rect> {
+        self.find(id).and_then(|w| self.maximize_rect(w))
+    }
+
+    /// Smallest content a resize allows.
+    fn min_content(&self) -> (i32, i32) {
+        (200 * self.m.u, 100 * self.m.u)
     }
 
     /// A window's title bar, close button and minimise button (screen coordinates).
@@ -366,10 +432,89 @@ impl Desktop {
     pub fn add_window(&mut self, id: u32, title: &str, (cw, ch): (usize, usize), (x, y): (i32, i32), fill: Color) {
         let b = self.m.border;
         let rect = Rect::new(x, y, cw as i32 + 2 * b, ch as i32 + self.m.title_h + 2 * b);
-        self.windows.push(Window { id, title: String::from(title), rect, state: State::Open, content: Canvas::new(cw, ch, fill) });
+        self.windows.push(Window {
+            id,
+            title: String::from(title),
+            rect,
+            state: State::Open,
+            content: Canvas::new(cw, ch, fill),
+            fill,
+            resizable: false,
+            restore: None,
+        });
         self.set_focus(Some(id));
         self.damage_window(id);
         self.damage_taskbar();
+    }
+
+    /// Lets a window be maximised and resized (it gets a maximise button and resize edges).
+    pub fn set_resizable(&mut self, id: u32, on: bool) {
+        if let Some(i) = self.index(id) {
+            self.windows[i].resizable = on;
+            self.damage_window(id);
+        }
+    }
+
+    /// Gives a window a new outer rectangle and a fresh (blank) content canvas.
+    fn apply_rect(&mut self, id: u32, r: Rect) {
+        let Some(i) = self.index(id) else { return };
+        let b = self.m.border;
+        let cw = (r.w - 2 * b).max(1);
+        let ch = (r.h - self.m.title_h - 2 * b).max(1);
+        self.damage_window(id);
+        let w = &mut self.windows[i];
+        w.rect = Rect::new(r.x, r.y, cw + 2 * b, ch + self.m.title_h + 2 * b);
+        w.content = Canvas::new(cw as usize, ch as usize, w.fill);
+        self.damage_window(id);
+    }
+
+    /// Maximises a resizable window to the work area, or restores it. Returns
+    /// true if its size changed (its app must redraw).
+    pub fn toggle_maximize(&mut self, id: u32) -> bool {
+        let Some(i) = self.index(id) else { return false };
+        if !self.windows[i].resizable {
+            return false;
+        }
+        match self.windows[i].restore.take() {
+            Some(r) => self.apply_rect(id, r),
+            None => {
+                let old = self.windows[i].rect;
+                self.windows[i].restore = Some(old);
+                let work = self.work_area();
+                self.apply_rect(id, work);
+            }
+        }
+        self.show(id);
+        true
+    }
+
+    pub fn is_maximized(&self, id: u32) -> bool {
+        self.find(id).is_some_and(|w| w.restore.is_some())
+    }
+
+    /// Resizes a window's content to `cw` x `ch` (clamped to the minimum and the work area).
+    pub fn resize_window(&mut self, id: u32, cw: i32, ch: i32) {
+        let Some(w) = self.find(id) else { return };
+        let b = self.m.border;
+        let (mw, mh) = self.min_content();
+        let work = self.work_area();
+        let r = w.rect;
+        let cw = cw.max(mw).min(work.right() - r.x - 2 * b);
+        let ch = ch.max(mh).min(work.bottom() - r.y - self.m.title_h - 2 * b);
+        self.apply_rect(id, Rect::new(r.x, r.y, cw + 2 * b, ch + self.m.title_h + 2 * b));
+        if let Some(i) = self.index(id) {
+            self.windows[i].restore = None;
+        }
+    }
+
+    /// Changes a window's title (title bar and taskbar button).
+    pub fn set_title(&mut self, id: u32, title: &str) {
+        let Some(i) = self.index(id) else { return };
+        if self.windows[i].title != title {
+            self.windows[i].title = String::from(title);
+            self.damage_window(id);
+            self.damage_taskbar();
+        }
     }
 
     /// Mutable access to what a window shows (report changes with `damage_content`).
@@ -545,6 +690,16 @@ impl Desktop {
             if self.minimize_rect(w).contains(x, y) {
                 return Hit::Minimize(w.id);
             }
+            if self.maximize_rect(w).is_some_and(|r| r.contains(x, y)) {
+                return Hit::Maximize(w.id);
+            }
+            if w.resizable && w.restore.is_none() && y >= self.title_rect(w).bottom() {
+                let g = self.grip();
+                let edges = if x >= w.rect.right() - g { EDGE_RIGHT } else { 0 } | if y >= w.rect.bottom() - g { EDGE_BOTTOM } else { 0 };
+                if edges != 0 {
+                    return Hit::Resize(w.id, edges);
+                }
+            }
             if self.title_rect(w).contains(x, y) {
                 return Hit::Title(w.id);
             }
@@ -569,7 +724,24 @@ impl Desktop {
         if let Some((id, gx, gy)) = self.drag {
             self.move_window(id, x - gx, y - gy);
         }
-        let hover = if self.drag.is_some() { Hit::Desktop } else { self.hit(x, y) };
+        if let Some(rs) = self.resizing {
+            let b = self.m.border;
+            let (mw, mh) = self.min_content();
+            let work = self.work_area();
+            let mut r = rs.from;
+            if rs.edges & EDGE_RIGHT != 0 {
+                r.w = (rs.from.w + x - rs.start.0).max(mw + 2 * b).min(work.right() - r.x);
+            }
+            if rs.edges & EDGE_BOTTOM != 0 {
+                r.h = (rs.from.h + y - rs.start.1).max(mh + self.m.title_h + 2 * b).min(work.bottom() - r.y);
+            }
+            if r != rs.now {
+                self.add_damage(rs.now);
+                self.add_damage(r);
+                self.resizing = Some(Resizing { now: r, ..rs });
+            }
+        }
+        let hover = if self.drag.is_some() || self.resizing.is_some() { Hit::Desktop } else { self.hit(x, y) };
         self.set_hover(hover);
     }
 
@@ -580,6 +752,7 @@ impl Desktop {
             Hit::TaskButton(id) => self.task_buttons().into_iter().find(|(i, _)| *i == id).map(|(_, r)| r),
             Hit::MenuItem(i) => Some(self.menu_item(i)),
             Hit::Close(id) => self.find(id).map(|w| self.close_rect(w)),
+            Hit::Maximize(id) => self.find(id).and_then(|w| self.maximize_rect(w)),
             Hit::Minimize(id) => self.find(id).map(|w| self.minimize_rect(w)),
             _ => None,
         }
@@ -651,6 +824,17 @@ impl Desktop {
                 self.minimize(id);
                 ev.push(Event::Minimized(id));
             }
+            Hit::Maximize(id) => {
+                focus(self, id, &mut ev);
+                if self.toggle_maximize(id) {
+                    ev.push(Event::Resized(id));
+                }
+            }
+            Hit::Resize(id, edges) => {
+                focus(self, id, &mut ev);
+                let r = self.find(id).map(|w| w.rect).unwrap_or_default();
+                self.resizing = Some(Resizing { id, from: r, start: (x, y), edges, now: r });
+            }
             Hit::Title(id) => {
                 focus(self, id, &mut ev);
                 let r = self.find(id).map(|w| w.rect).unwrap_or_default();
@@ -670,6 +854,15 @@ impl Desktop {
 
     /// The left button came up.
     pub fn release(&mut self) -> Vec<Event> {
+        if let Some(rs) = self.resizing.take() {
+            self.add_damage(rs.now);
+            if rs.now == rs.from {
+                return Vec::new();
+            }
+            let b = self.m.border;
+            self.resize_window(rs.id, rs.now.w - 2 * b, rs.now.h - self.m.title_h - 2 * b);
+            return alloc::vec![Event::Resized(rs.id)];
+        }
         match self.drag.take() {
             Some((id, ..)) => {
                 let r = self.find(id).map(|w| w.rect).unwrap_or_default();
@@ -829,6 +1022,12 @@ impl Desktop {
                 self.draw_window(back, w, area);
             }
         }
+        if let Some(rs) = self.resizing {
+            let u = self.m.u;
+            for i in 0..2 * u {
+                back.outline(rs.now.inset(i), ACCENT, area);
+            }
+        }
         if self.taskbar().intersects(&area) {
             self.draw_taskbar(back, area);
         }
@@ -887,8 +1086,42 @@ impl Desktop {
             back.text(gx, gy, ts, color, glyph, clip.intersect(&r));
         }
 
+        if let Some(r) = self.maximize_rect(w) {
+            let lit = self.hover == Hit::Maximize(w.id);
+            back.fill_clipped(r, mix(base, INK, if lit { 50 } else { 18 }), clip);
+            let ink = if lit || focused { INK } else { DIM };
+            let s = r.inset(r.w / 4);
+            if w.restore.is_some() {
+                // Restore glyph: two overlapping squares.
+                let a = Rect::new(s.x + 2 * u, s.y, s.w - 2 * u, s.h - 2 * u);
+                let b2 = Rect::new(s.x, s.y + 2 * u, s.w - 2 * u, s.h - 2 * u);
+                for i in 0..u {
+                    back.outline(a.inset(i), ink, clip.intersect(&r));
+                }
+                back.fill_clipped(b2, mix(base, INK, if lit { 50 } else { 18 }), clip);
+                for i in 0..u {
+                    back.outline(b2.inset(i), ink, clip.intersect(&r));
+                }
+            } else {
+                for i in 0..u {
+                    back.outline(s.inset(i), ink, clip.intersect(&r));
+                }
+                back.fill_clipped(Rect::new(s.x, s.y, s.w, 2 * u), ink, clip.intersect(&r));
+            }
+        }
+
         if let Some(c) = self.content_rect(w.id) {
             back.blit(&w.content, w.content.bounds(), c.x, c.y, clip.intersect(&c));
+            if w.resizable && w.restore.is_none() {
+                // The resize grip: three dots on a diagonal in the bottom-right corner.
+                for k in 0..3 {
+                    for j in 0..=k {
+                        let gx = c.right() - 3 * u * (j + 1);
+                        let gy = c.bottom() - 3 * u * (k - j + 1);
+                        back.fill_clipped(Rect::new(gx, gy, 2 * u, 2 * u), mix(PANEL, DIM, 160), clip.intersect(&c));
+                    }
+                }
+            }
         }
     }
 

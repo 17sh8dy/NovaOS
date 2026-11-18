@@ -52,6 +52,7 @@ mod screen;
 mod sched;
 mod shell;
 mod smp;
+mod system;
 mod syscall;
 mod vm;
 mod xhci;
@@ -314,6 +315,7 @@ fn kmain(boot_copy: &'static BootInfo) -> ! {
         // ---- Stage 9: storage (SATA + NVMe) and files ----------------------
         files::init(&devices);
         auth::init();
+        system::init();
 
         // ---- USB keyboards and mice (xHCI) -----------------------------------
         let usb = xhci::init(&devices);

@@ -170,7 +170,7 @@ def press(qmp, qcode, shift=False):
     time.sleep(0.04)
 
 
-SHIFTED = {"|": "backslash", "&": "7", "_": "minus", "!": "1", ":": "semicolon"}
+SHIFTED = {"|": "backslash", "&": "7", "_": "minus", "!": "1", ":": "semicolon", "*": "8", "+": "equal"}
 
 
 def type_text(qmp, text):
@@ -606,6 +606,211 @@ def login_test(qmp, serial, password) -> str | None:
     return None
 
 
+def apps_test(qmp, serial) -> str | None:
+    """Stage 12 through QEMU's mouse and keyboard: Calculator (mouse and keys),
+    Notes (type, save, new, open), maximise/restore and corner-resize,
+    Settings (wallpaper, saved to /system/settings), the Terminal maximised
+    (its grid grows), and the /system folder."""
+
+    def log():
+        return read_log(serial)
+
+    def wait_for(pattern, seconds=15):
+        end = time.time() + seconds
+        while time.time() < end:
+            m = re.search(pattern, log())
+            if m:
+                return m
+            time.sleep(0.1)
+        return None
+
+    def count(pattern):
+        return len(re.findall(pattern, log()))
+
+    def wait_new(pattern, before, seconds=15):
+        end = time.time() + seconds
+        while time.time() < end:
+            ms = re.findall(pattern, log())
+            if len(ms) > before:
+                return ms[-1]
+            time.sleep(0.1)
+        return None
+
+    pos = None
+    for m in re.finditer(r"mouse: (?:first movement, pointer|left button (?:down|up)|right button (?:down|up)) at \((\d+), (\d+)\)", log()):
+        pos = [int(m.group(1)), int(m.group(2))]
+    if pos is None:
+        m = re.search(r"desktop: (\d+)x(\d+),", log())
+        pos = [int(m.group(1)) // 2, int(m.group(2)) // 2]
+
+    def move_to(x, y):
+        dx, dy = x - pos[0], y - pos[1]
+        while dx or dy:
+            sx = max(-80, min(80, dx))
+            sy = max(-80, min(80, dy))
+            qmp.cmd("input-send-event", events=[
+                {"type": "rel", "data": {"axis": "x", "value": sx}},
+                {"type": "rel", "data": {"axis": "y", "value": sy}},
+            ])
+            dx -= sx
+            dy -= sy
+            time.sleep(0.03)
+        pos[0], pos[1] = x, y
+
+    def button(down):
+        pat = rf"mouse: left button {'down' if down else 'up'} at \({pos[0]}, {pos[1]}\)"
+        before = count(pat)
+        qmp.cmd("input-send-event", events=[{"type": "btn", "data": {"down": down, "button": "left"}}])
+        if wait_new(pat, before, 5) is None:
+            raise AssertionError(f"the kernel did not see the button at {tuple(pos)} (pointer out of step?)")
+
+    def click(x, y):
+        move_to(x, y)
+        button(True)
+        button(False)
+
+    def ctrl(key):
+        qmp.cmd("input-send-event", events=[
+            {"type": "key", "data": {"down": True, "key": {"type": "qcode", "data": "ctrl"}}},
+            {"type": "key", "data": {"down": True, "key": {"type": "qcode", "data": key}}},
+            {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": key}}},
+            {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": "ctrl"}}},
+        ])
+        time.sleep(0.1)
+
+    def geometry(name, what, before=0):
+        pat = (rf"wm: {name} {what} at \((-?\d+), (-?\d+)\) (\d+)x(\d+): title \((\d+), (\d+)\), close \((\d+), (\d+)\), "
+               rf"minimize \((\d+), (\d+)\), taskbar \((\d+), (\d+)\), maximize \((\d+), (\d+)\)")
+        m = wait_new(pat, before)
+        if not m:
+            return None
+        v = [int(g) for g in m]
+        return {"at": (v[0], v[1]), "size": (v[2], v[3]), "title": (v[4], v[5]), "task": (v[10], v[11]), "max": (v[12], v[13])}
+
+    def launch(name):
+        before = count(r"desktop: menu opened")
+        click(*launcher)
+        if wait_new(r"desktop: menu opened", before, 5) is None:
+            raise AssertionError("the launcher menu did not open")
+        m = re.findall(rf"desktop: menu opened: .*?{name} at \((\d+), (\d+)\)", log())
+        if not m:
+            raise AssertionError(f"no {name} in the launcher menu")
+        g_before = count(rf"wm: {name} opened")
+        click(int(m[-1][0]), int(m[-1][1]))
+        g = geometry(name, "opened", g_before)
+        if g is None:
+            raise AssertionError(f"{name} did not open")
+        return g
+
+    def point(pattern):
+        m = re.findall(pattern, log())
+        return (int(m[-1][0]), int(m[-1][1])) if m else None
+
+    try:
+        m = wait_for(r"desktop: ready; launcher at \((\d+), (\d+)\)")
+        if not m:
+            return "the desktop never said it was ready"
+        launcher = (int(m.group(1)), int(m.group(2)))
+        if not wait_for(r"shell: ready"):
+            return "the shell never started"
+        if not wait_for(r"system: /system ready"):
+            return "the /system folder was not set up"
+        term = geometry("Terminal", "open")
+
+        # ---- Calculator: mouse, then keyboard.
+        launch("Calculator")
+        for label in ["7", "+", "8", "="]:
+            p = point(rf"calc: buttons: .*?{re.escape(label)} at \((\d+), (\d+)\)")
+            if not p:
+                return f"no position for calculator button {label!r}"
+            click(*p)
+        if not wait_for(r"calc: display 15\n"):
+            return "7 + 8 = did not show 15"
+        type_text(qmp, "12*3\n")
+        if not wait_for(r"calc: display 36\n"):
+            return "typing 12*3 Enter did not show 36"
+        type_text(qmp, "0.1+0.2\n")
+        if not wait_for(r"calc: display 0\.3\n"):
+            return "0.1 + 0.2 was not exactly 0.3"
+        screenshot(qmp, "apps_calculator")
+
+        # Resize the calculator by dragging its bottom-right corner.
+        calc = geometry("Calculator", "opened")
+        corner = (calc["at"][0] + calc["size"][0] - 2, calc["at"][1] + calc["size"][1] - 2)
+        before = count(r"wm: Calculator resized")
+        move_to(*corner)
+        button(True)
+        move_to(corner[0] + 30, corner[1] + 30)
+        button(False)
+        r = wait_new(r"wm: Calculator resized: content (\d+)x(\d+)", before)
+        if not r:
+            return "dragging the corner did not resize the Calculator"
+
+        # ---- Notes: type, save (prompt), new, open again.
+        notes = launch("Notes")
+        type_text(qmp, "Hello from Notes\nsecond line\n")
+        ctrl("s")
+        time.sleep(0.3)
+        press(qmp, "ret")  # accept /documents/untitled.txt
+        if not wait_for(r"notes: saved /documents/untitled\.txt \(29 bytes\)"):
+            return "Ctrl+S then Enter did not save /documents/untitled.txt"
+        ctrl("n")
+        ctrl("o")
+        time.sleep(0.2)
+        type_text(qmp, "untitled.txt\n")
+        if not wait_for(r"notes: opened /documents/untitled\.txt \(29 bytes\)"):
+            return "Ctrl+O did not open the saved file"
+        screenshot(qmp, "apps_notes")
+
+        # Maximise and restore Notes.
+        before = count(r"wm: Notes resized")
+        click(*notes["max"])
+        if not wait_new(r"wm: Notes resized: content \d+x\d+ \(maximized\)", before):
+            return "the maximise button did not maximise Notes"
+        before = count(r"wm: Notes resized: content \d+x\d+\n")
+        # The button moved with the window: find it again from the log of the new size.
+        m = re.search(r"desktop: (\d+)x(\d+),", log())
+        screen_w = int(m.group(1))
+        max_btn = (screen_w - (notes["at"][0] + notes["size"][0] - notes["max"][0]), notes["max"][1] - notes["at"][1])
+        click(*max_btn)
+        if not wait_new(r"wm: Notes resized: content \d+x\d+\n", before):
+            return "the maximise button did not restore Notes"
+
+        # ---- Settings: next wallpaper, saved in /system/settings.
+        launch("Settings")
+        p = point(r"settings: controls: wallpaper next at \((\d+), (\d+)\)")
+        click(*p)
+        if not wait_for(r"settings: lock after 10 min, UTC\+00:00, wallpaper Ocean"):
+            return "the wallpaper button did not change the setting"
+        screenshot(qmp, "apps_settings")
+
+        # ---- Terminal: back to it, maximise it, the grid grows; /system is there.
+        click(*term["task"])
+        time.sleep(0.3)
+        before = count(r"wm: Terminal is now")
+        click(*term["max"])
+        m = wait_new(r"wm: Terminal is now (\d+)x(\d+) cells", before)
+        if not m:
+            return "maximising the Terminal did not resize its grid"
+        cols = int(m[0])
+        old = re.search(r"\((\d+)x(\d+) cells\)", log())
+        if cols <= int(old.group(1)):
+            return f"the maximised Terminal is not wider ({cols} columns)"
+        type_text(qmp, "cat /system/settings\n")
+        if not wait_for(r"con: wallpaper = Ocean"):
+            return "/system/settings does not hold the new wallpaper"
+        type_text(qmp, "cat /system/README.txt\n")
+        if not wait_for(r"con: Nova OS system folder"):
+            return "/system/README.txt is missing"
+        type_text(qmp, "ls /system/logs\n")
+        if not wait_for(r"con: .*boot\.log"):
+            return "/system/logs/boot.log is missing"
+        screenshot(qmp, "apps_terminal_max")
+    except AssertionError as e:
+        return str(e)
+    return None
+
+
 def desktop_test(qmp, serial) -> str | None:
     """Uses the desktop like a person would, through QEMU's mouse and keyboard:
     the launcher, the Files window (keyboard browsing, preview), dragging,
@@ -913,6 +1118,7 @@ def main() -> int:
     ap.add_argument("--then-key", action="store_true", help="after the --expect text appears, press a key and require 'restart stopped' in the log and QEMU still running")
     ap.add_argument("--nsh", action="store_true", help="the user-space shell: pipelines, cd, background jobs, Ctrl+C, exit")
     ap.add_argument("--login", metavar="PASSWORD", help="the kernel was built with this test password: lock screen, wrong/right password, lock, Ctrl+Alt+L, passwd")
+    ap.add_argument("--apps", action="store_true", help="Calculator, Notes, Settings, maximise/resize, the /system folder")
     ap.add_argument("--desktop", action="store_true", help="use the desktop: launcher, Files, dragging, focus, System, taskbar")
     ap.add_argument("--usb", action="store_true", help="attach a USB keyboard + mouse (QEMU input goes to them) and test USB")
     ap.add_argument("--fresh-disk", action="store_true", help="start from a blank virtual disk")
@@ -1042,6 +1248,14 @@ def main() -> int:
                 reason = "login test: " + problem
             else:
                 print("Login: started locked, keys never reached the shell, wrong passwords refused, unlock, lock, Ctrl+Alt+L and passwd all worked")
+
+        if ok and opts.apps and not opts.expect:
+            problem = apps_test(qmp, serial)
+            if problem:
+                ok = False
+                reason = "apps test: " + problem
+            else:
+                print("Apps: Calculator (mouse + keys), Notes (save/new/open), maximise/restore, resize, Settings, Terminal maximised, /system all worked")
 
         if ok and opts.desktop and not opts.expect:
             problem = desktop_test(qmp, serial)

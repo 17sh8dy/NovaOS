@@ -8,6 +8,14 @@ detail; this page is the orientation + current state.
 Machine-specific details (the signing machine's address, drive letters, which PC) are NOT in git (public
 repo). They are in `LOCAL-NOTES.md` next to this folder's `README.md` (git-ignored). Read it too.
 
+## 2026-11-17 (later): stage 12, apps + window sizing (QEMU only)
+
+* Stage 11 committed as `8168f86` (not pushed). Stage 12: Calculator, Notes, Settings, maximise/resize,
+  idle auto-lock, `/system` folder. Details: `docs/ROADMAP.md` "Stage 12 notes". The roadmap now has the
+  plan for **Vexa on Nova** (needs networking first; Vexa itself is Chromium and can't run here).
+* **USB on the ASUS is still not fixed:** the diagnostic build that shows the `xhci:`/`usb:` lines in the
+  Terminal is on the stick. The user boots it and photographs the Terminal; fix `kernel/src/xhci.rs` from that.
+
 ## 2026-11-17: stage 11, login password + desktop polish (QEMU only)
 
 * New: a password lock screen (at boot when a password is set, launcher Lock, Ctrl+Alt+L, `lock`, `passwd`),
@@ -107,6 +115,6 @@ repo). They are in `LOCAL-NOTES.md` next to this folder's `README.md` (git-ignor
 
 ## Next ideas
 
-Fix USB input on the ASUS (above); window maximise/resize; idle auto-lock; more apps (text editor, settings);
+Fix USB input on the ASUS (above); networking, then Vexa on Nova (roadmap); Notes selection + clipboard;
 USB hubs; USB storage; MSI; window resize; signals/redirection; FADT-based reset
 (the safety net uses port 0xCF9, then the keyboard controller, then a triple fault; only QEMU-tested).

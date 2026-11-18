@@ -11,12 +11,15 @@
 //! their title bars and buttons, menu entries, and what each click did.
 
 use crate::files::VFS;
-use crate::gui::{self, FILES, LOCK, PASSWORD, RESTART, SYSTEM, TERMINAL};
+use crate::gui::{self, CALC, FILES, LOCK, NOTES, PASSWORD, RESTART, SETTINGS, SYSTEM, TERMINAL};
 use crate::{auth, cpu, files, heap, interrupts, kprintln, pmm, process, ps2, rtc, sched, xhci};
 use alloc::string::String;
 use alloc::vec::Vec;
 use nova_desktop::Event;
 use nova_desktop::lock::{LockKey, Mode, Outcome};
+use nova_desktop::notes::NotesReq;
+use nova_desktop::settings::SettingsOut;
+use nova_desktop::ui::KeyIn;
 use nova_desktop::apps::{Entry, Nav, PREVIEW_BYTES, Request, join};
 use nova_fs::NodeKind;
 use nova_gfx::Rect;
@@ -28,6 +31,9 @@ fn name(id: u32) -> &'static str {
         TERMINAL => "Terminal",
         FILES => "Files",
         SYSTEM => "System",
+        NOTES => "Notes",
+        CALC => "Calculator",
+        SETTINGS => "Settings",
         LOCK => "Lock",
         PASSWORD => "Password",
         RESTART => "Restart",
@@ -45,12 +51,13 @@ fn log_geometry(id: u32, what: &str) {
         let (title, close, min) = g.desk.chrome(id)?;
         let task = g.desk.task_buttons().into_iter().find(|(i, _)| *i == id).map(|(_, r)| center(r)).unwrap_or((0, 0));
         let r = g.desk.window(id)?.rect;
-        Some((r, center(title), center(close), center(min), task))
+        let max = g.desk.maximize_button(id).map(center).unwrap_or((0, 0));
+        Some((r, center(title), center(close), center(min), task, max))
     })
     .flatten();
-    if let Some((r, t, c, m, task)) = geo {
+    if let Some((r, t, c, m, task, max)) = geo {
         kprintln!(
-            "wm: {} {what} at ({}, {}) {}x{}: title ({}, {}), close ({}, {}), minimize ({}, {}), taskbar ({}, {})",
+            "wm: {} {what} at ({}, {}) {}x{}: title ({}, {}), close ({}, {}), minimize ({}, {}), taskbar ({}, {}), maximize ({}, {})",
             name(id),
             r.x,
             r.y,
@@ -63,7 +70,9 @@ fn log_geometry(id: u32, what: &str) {
             m.0,
             m.1,
             task.0,
-            task.1
+            task.1,
+            max.0,
+            max.1
         );
     }
 }
@@ -121,6 +130,51 @@ fn fulfil(req: Option<Request>) {
             gui::with(|g| g.render_files());
         }
     }
+}
+
+fn days_in_month(year: u16, month: u8) -> u8 {
+    match month {
+        2 if (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400) => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    }
+}
+
+/// The CMOS time (usually UTC) moved by the Settings time zone.
+fn local_time(mut t: nova_x86::rtc::DateTime) -> nova_x86::rtc::DateTime {
+    let off = crate::system::settings().utc_offset_min;
+    let mut mins = t.hour as i32 * 60 + t.minute as i32 + off;
+    if mins < 0 {
+        mins += 24 * 60;
+        if t.day > 1 {
+            t.day -= 1;
+        } else {
+            if t.month > 1 {
+                t.month -= 1;
+            } else {
+                t.month = 12;
+                t.year -= 1;
+            }
+            t.day = days_in_month(t.year, t.month);
+        }
+    } else if mins >= 24 * 60 {
+        mins -= 24 * 60;
+        if t.day < days_in_month(t.year, t.month) {
+            t.day += 1;
+        } else {
+            t.day = 1;
+            if t.month < 12 {
+                t.month += 1;
+            } else {
+                t.month = 1;
+                t.year += 1;
+            }
+        }
+    }
+    t.hour = (mins / 60) as u8;
+    t.minute = (mins % 60) as u8;
+    t
 }
 
 fn format_clock(t: &nova_x86::rtc::DateTime) -> String {
@@ -265,8 +319,188 @@ fn open_app(id: u32) {
             refresh_system();
             kprintln!("system: window shows {} lines", system_lines().len());
         }
+        _ => rerender(id),
+    }
+    log_controls(id);
+}
+
+/// Logs where an app's buttons are on screen (for the tests).
+fn log_controls(id: u32) {
+    let line = gui::with(|g| {
+        let c = g.desk.content_rect(id)?;
+        let (w, h) = (c.w, c.h);
+        let at = |p: (i32, i32)| alloc::format!("({}, {})", c.x + p.0, c.y + p.1);
+        match id {
+            CALC => {
+                let parts: Vec<String> = ["7", "8", "+", "=", "C"].iter().filter_map(|l| g.calc.button_center(l, w, h).map(|p| alloc::format!("{l} at {}", at(p)))).collect();
+                Some(alloc::format!("calc: buttons: {}", parts.join(", ")))
+            }
+            SETTINGS => Some(alloc::format!(
+                "settings: controls: wallpaper next at {}, lock next at {}, password at {}",
+                at(g.settings.control_center(2, true, w)),
+                at(g.settings.control_center(0, true, w)),
+                at(g.settings.control_center(3, true, w))
+            )),
+            NOTES => {
+                let (sx, sy) = g.notes.tool_center("Save")?;
+                Some(alloc::format!("notes: toolbar: Save at {}", at((sx, sy))))
+            }
+            _ => None,
+        }
+    })
+    .flatten();
+    if let Some(l) = line {
+        kprintln!("{l}");
+    }
+}
+
+/// Redraws an app's window (after it opened or got a new size).
+fn rerender(id: u32) {
+    match id {
+        TERMINAL => {
+            gui::with(|g| g.fit_terminal());
+        }
+        FILES => fulfil(None),
+        SYSTEM => refresh_system(),
+        NOTES => {
+            gui::with(|g| g.render_notes());
+        }
+        CALC => {
+            gui::with(|g| g.render_calc());
+        }
+        SETTINGS => refresh_settings(),
         _ => {}
     }
+}
+
+/// The Settings window, with fresh "About this PC" lines.
+fn refresh_settings() {
+    let mut about: Vec<(String, String)> = Vec::new();
+    about.push((String::from("Nova"), alloc::format!("Full Kernel {}", env!("CARGO_PKG_VERSION"))));
+    about.push((String::from("CPUs"), alloc::format!("{} online", cpu::online_count())));
+    if let Some(s) = pmm::stats() {
+        about.push((String::from("Memory"), alloc::format!("{} MiB", s.tracked_frames * 4 / 1024)));
+    }
+    about.push((String::from("Disk"), String::from(if files::root_disk().is_some() { "Nova disk mounted at /" } else { "none (files live in RAM)" })));
+    let s = crate::system::settings();
+    let set = auth::is_set();
+    gui::with(|g| {
+        g.settings.s = s;
+        g.settings.password_set = set;
+        g.settings.stored = String::from(crate::system::stored_where());
+        g.settings.about = about;
+        g.render_settings();
+    });
+}
+
+/// Does what Notes asked for (outside the GUI lock) and hands it the answer.
+fn notes_request(req: Option<NotesReq>) {
+    match req {
+        Some(NotesReq::Save(path, bytes)) => {
+            let r = {
+                let mut vfs = VFS.lock();
+                vfs.write_file(&path, &bytes).map_err(|e| alloc::format!("{e}"))
+            };
+            if r.is_ok() {
+                let _ = files::sync();
+            }
+            match &r {
+                Ok(()) => kprintln!("notes: saved {path} ({} bytes)", bytes.len()),
+                Err(e) => kprintln!("notes: could not save {path}: {e}"),
+            }
+            gui::with(|g| {
+                g.notes.saved(&path, r);
+                g.render_notes();
+            });
+        }
+        Some(NotesReq::Open(path)) => {
+            let data = {
+                let mut vfs = VFS.lock();
+                match vfs.stat(&path) {
+                    Ok(st) if st.size as usize > nova_desktop::notes::MAX_BYTES => Err(String::from("too big for Notes (256 KiB at most)")),
+                    Ok(_) => vfs.read_file(&path).map_err(|e| alloc::format!("{e}")),
+                    Err(e) => Err(alloc::format!("{e}")),
+                }
+            };
+            match &data {
+                Ok(d) => kprintln!("notes: opened {path} ({} bytes)", d.len()),
+                Err(e) => kprintln!("notes: could not open {path}: {e}"),
+            }
+            gui::with(|g| {
+                g.notes.loaded(&path, data);
+                g.render_notes();
+            });
+        }
+        None => {
+            gui::with(|g| g.render_notes());
+        }
+    }
+}
+
+/// A setting changed: apply it and save it.
+fn settings_changed() {
+    let Some(s) = gui::with(|g| {
+        let s = g.settings.s;
+        g.apply_theme(s.theme);
+        s
+    }) else {
+        return;
+    };
+    let r = crate::system::save(s);
+    kprintln!(
+        "settings: lock after {} min, {}, wallpaper {}{}",
+        s.lock_minutes,
+        nova_desktop::settings::offset_text(s.utc_offset_min),
+        nova_desktop::settings::THEMES[s.theme].name,
+        if r.is_err() { " (not saved)" } else { "" }
+    );
+    if let Some(t) = rtc::now().map(local_time) {
+        gui::set_clock(&format_clock(&t));
+    }
+    refresh_settings();
+}
+
+fn settings_out(out: SettingsOut) {
+    match out {
+        SettingsOut::Changed => settings_changed(),
+        SettingsOut::Password => password_card(),
+        SettingsOut::None => {
+            gui::with(|g| g.render_settings());
+        }
+    }
+}
+
+/// Keyboard input as the apps see it.
+fn key_in(i: Input) -> Option<KeyIn> {
+    Some(match i.action {
+        Action::Char(c) if i.ctrl => KeyIn::Ctrl(c.to_ascii_lowercase()),
+        Action::Char(_) if i.alt => return None,
+        Action::Char(c) => KeyIn::Char(c),
+        Action::Key(Key::Enter) => KeyIn::Enter,
+        Action::Key(Key::Backspace) => KeyIn::Backspace,
+        Action::Key(Key::Delete) => KeyIn::Delete,
+        Action::Key(Key::Left) => KeyIn::Left,
+        Action::Key(Key::Right) => KeyIn::Right,
+        Action::Key(Key::Up) => KeyIn::Up,
+        Action::Key(Key::Down) => KeyIn::Down,
+        Action::Key(Key::Home) => KeyIn::Home,
+        Action::Key(Key::End) => KeyIn::End,
+        Action::Key(Key::PageUp) => KeyIn::PageUp,
+        Action::Key(Key::PageDown) => KeyIn::PageDown,
+        Action::Key(Key::Tab) => KeyIn::Tab,
+        Action::Key(Key::Escape) => KeyIn::Escape,
+        _ => return None,
+    })
+}
+
+/// Files' Ctrl+E: edit the selected file in Notes.
+fn edit_in_notes() {
+    let path = gui::with(|g| g.files.selected().filter(|e| !e.dir).map(|e| join(&g.files.path, &e.name))).flatten();
+    let Some(path) = path else { return };
+    gui::with(|g| g.show(NOTES));
+    log_geometry(NOTES, "opened");
+    let req = gui::with(|g| g.notes.request_open(&path)).flatten();
+    notes_request(req);
 }
 
 fn handle(e: Event) {
@@ -294,6 +528,48 @@ fn handle(e: Event) {
         Event::Restored(id) => kprintln!("wm: {} restored", name(id)),
         Event::DragStarted(_) => {}
         Event::Moved(id, ..) => log_geometry(id, "moved"),
+        Event::Resized(id) => {
+            rerender(id);
+            log_controls(id);
+            if let Some(c) = gui::with(|g| g.desk.content_rect(id)).flatten() {
+                kprintln!("wm: {} resized: content {}x{}{}", name(id), c.w, c.h, if gui::with(|g| g.desk.is_maximized(id)) == Some(true) { " (maximized)" } else { "" });
+            }
+            if id == TERMINAL
+                && let Some((cols, rows)) = gui::console_size()
+            {
+                kprintln!("wm: Terminal is now {cols}x{rows} cells");
+            }
+        }
+        Event::Click(CALC, x, y) => {
+            let changed = gui::with(|g| {
+                let (w, h) = g.content_size(CALC);
+                let ch = g.calc.click(x, y, w, h);
+                if ch {
+                    g.render_calc();
+                }
+                ch.then(|| g.calc.display())
+            })
+            .flatten();
+            if let Some(d) = changed {
+                kprintln!("calc: display {d}");
+            }
+        }
+        Event::Click(NOTES, x, y) => {
+            let req = gui::with(|g| {
+                let (w, h) = g.content_size(NOTES);
+                g.notes.click(x, y, w, h)
+            })
+            .flatten();
+            notes_request(req);
+        }
+        Event::Click(SETTINGS, x, y) => {
+            let out = gui::with(|g| {
+                let (w, _) = g.content_size(SETTINGS);
+                g.settings.click(x, y, w)
+            })
+            .unwrap_or(SettingsOut::None);
+            settings_out(out);
+        }
         Event::Click(FILES, x, y) => {
             let req = gui::with(|g| {
                 let (w, h) = g.content_size(FILES);
@@ -336,8 +612,41 @@ fn ui_key(input: Input) {
         return;
     }
     let focused = gui::with(|g| g.desk.focused()).flatten();
-    if focused != Some(FILES) {
-        return;
+    let Some(k) = key_in(input) else { return };
+    match focused {
+        Some(CALC) => {
+            if let Some(ck) = nova_desktop::calc::Calculator::key_for(k) {
+                let d = gui::with(|g| {
+                    g.calc.press(ck);
+                    g.render_calc();
+                    g.calc.display()
+                });
+                if let Some(d) = d {
+                    kprintln!("calc: display {d}");
+                }
+            }
+            return;
+        }
+        Some(NOTES) => {
+            let req = gui::with(|g| {
+                let (w, h) = g.content_size(NOTES);
+                g.notes.key(k, w, h)
+            })
+            .flatten();
+            notes_request(req);
+            return;
+        }
+        Some(SETTINGS) => {
+            let out = gui::with(|g| g.settings.key(k)).unwrap_or(SettingsOut::None);
+            settings_out(out);
+            return;
+        }
+        Some(FILES) if k == KeyIn::Ctrl('e') => {
+            edit_in_notes();
+            return;
+        }
+        Some(FILES) => {}
+        _ => return,
     }
     let nav = match input.action {
         Action::Key(Key::Up) => Nav::Up,
@@ -382,10 +691,15 @@ pub fn run(irq_mode: bool) -> ! {
     let mut last_secs = u64::MAX;
     let mut last_blink = 0;
     let mut wakeups: u64 = 0;
+    // Wake-ups are counted from here, so the report compares them with the loop's own run time.
+    let loop_start = interrupts::ticks();
     let mut idle_reported = false;
     let mut clock_logged = false;
 
     log_geometry(TERMINAL, "open");
+    let theme = crate::system::settings().theme;
+    gui::with(|g| g.apply_theme(theme));
+    crate::system::save_boot_log();
     if auth::is_set() {
         gui::with(|g| g.desk.show_lock(Mode::Unlock));
         kprintln!("login: locked at boot; the password opens the desktop");
@@ -434,7 +748,7 @@ pub fn run(irq_mode: bool) -> ! {
         let secs = ticks / interrupts::TICK_HZ as u64;
         if secs != last_secs {
             last_secs = secs;
-            match rtc::now() {
+            match rtc::now().map(local_time) {
                 Some(t) => {
                     if !clock_logged {
                         clock_logged = true;
@@ -448,6 +762,16 @@ pub fn run(irq_mode: bool) -> ! {
             }
             refresh_system();
             gui::with(|g| g.desk.lock_tick(secs));
+            // Lock after the Settings idle time (only with a password, never twice).
+            let mins = crate::system::settings().lock_minutes as u64;
+            if mins > 0
+                && auth::is_set()
+                && ps2::idle_ticks() >= mins * 60 * interrupts::TICK_HZ as u64
+                && gui::with(|g| g.desk.lock_shown()).flatten().is_none()
+            {
+                gui::with(|g| g.desk.show_lock(Mode::Unlock));
+                kprintln!("login: locked after {mins} min without input");
+            }
         }
         // The text cursor blinks twice a second.
         if ticks / (interrupts::TICK_HZ as u64 / 2) != last_blink {
@@ -456,10 +780,11 @@ pub fn run(irq_mode: bool) -> ! {
         }
         // Proof that the CPU really sleeps: a busy loop would have spun
         // millions of times by now, an idle one wakes about once per tick.
-        if irq_mode && secs >= 3 && !idle_reported {
+        let looped = (ticks - loop_start) / interrupts::TICK_HZ as u64;
+        if irq_mode && looped >= 3 && !idle_reported {
             idle_reported = true;
             kprintln!(
-                "idle: up {secs} s, {wakeups} wakeups from hlt, {} stray + {} spurious interrupts",
+                "idle: up {looped} s, {wakeups} wakeups from hlt, {} stray + {} spurious interrupts",
                 interrupts::stray_count(),
                 interrupts::spurious_count()
             );

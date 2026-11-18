@@ -393,3 +393,76 @@ fn alt_tab_visits_every_window() {
     d.close(3);
     assert_eq!(d.cycle(), None);
 }
+
+// ---- Maximise and resize ----
+
+#[test]
+fn maximise_fills_the_work_area_and_restores() {
+    let mut d = desk();
+    assert_eq!(d.maximize_button(1), None, "not resizable: no maximise button");
+    d.set_resizable(1, true);
+    let before = d.window(1).unwrap().rect;
+    let max = d.maximize_button(1).unwrap();
+    let ev = click(&mut d, max.x + 2, max.y + 2);
+    assert!(ev.contains(&Event::Resized(1)));
+    assert_eq!(d.window(1).unwrap().rect, d.work_area());
+    assert!(d.is_maximized(1));
+    assert_eq!(d.stacking().last(), Some(&1), "raised");
+    let c = d.content_rect(1).unwrap();
+    assert_eq!((c.w, c.h), (d.window(1).unwrap().content.width() as i32, d.window(1).unwrap().content.height() as i32));
+    // No resize edges while maximised.
+    let r = d.window(1).unwrap().rect;
+    assert!(!matches!(d.hit(r.right() - 2, r.bottom() - 2), Hit::Resize(..)));
+    let max = d.maximize_button(1).unwrap();
+    assert!(click(&mut d, max.x + 2, max.y + 2).contains(&Event::Resized(1)));
+    assert_eq!(d.window(1).unwrap().rect, before);
+    assert!(!d.is_maximized(1));
+}
+
+#[test]
+fn dragging_the_corner_resizes_with_an_outline_then_applies() {
+    let mut d = desk();
+    d.set_resizable(2, true);
+    let r = d.window(2).unwrap().rect;
+    let (x, y) = (r.right() - 2, r.bottom() - 2);
+    assert_eq!(d.hit(x, y), Hit::Resize(2, EDGE_RIGHT | EDGE_BOTTOM));
+    assert_eq!(d.hit(r.right() - 2, r.y + d.m.title_h + 20), Hit::Resize(2, EDGE_RIGHT));
+    d.pointer_moved(x, y);
+    assert!(d.press().is_empty() || d.focused() == Some(2));
+    d.pointer_moved(x + 60, y + 40);
+    // Nothing applied until release.
+    assert_eq!(d.window(2).unwrap().rect, r);
+    assert_eq!(d.release(), vec![Event::Resized(2)]);
+    let n = d.window(2).unwrap();
+    assert_eq!((n.rect.w, n.rect.h), (r.w + 60, r.h + 40));
+    assert_eq!(n.content.width() as i32, 260);
+    // Too small is clamped to the minimum.
+    let r = d.window(2).unwrap().rect;
+    d.pointer_moved(r.right() - 2, r.bottom() - 2);
+    d.press();
+    d.pointer_moved(r.x + 5, r.y + 5);
+    d.release();
+    let n = d.window(2).unwrap();
+    assert_eq!((n.content.width(), n.content.height()), (200, 100));
+    // A click on the edge without moving changes nothing.
+    let r = d.window(2).unwrap().rect;
+    d.pointer_moved(r.right() - 2, r.bottom() - 2);
+    d.press();
+    assert!(d.release().is_empty());
+}
+
+#[test]
+fn a_resized_window_composes_the_same_in_pieces() {
+    let mut d = desk();
+    d.set_resizable(2, true);
+    d.toggle_maximize(2);
+    let mut whole = Canvas::new(W, H, 0);
+    d.compose(&mut whole, d.screen());
+    let mut pieces = Canvas::new(W, H, 0);
+    for y in (0..H as i32).step_by(41) {
+        for x in (0..W as i32).step_by(59) {
+            d.compose(&mut pieces, Rect::new(x, y, 59, 41));
+        }
+    }
+    assert_eq!(whole.pixels(), pieces.pixels());
+}

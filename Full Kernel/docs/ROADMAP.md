@@ -16,8 +16,59 @@ Each stage ends with something that boots and is checked by `tools\test.ps1`.
 | 9b | Real-hardware input ✅ | xHCI USB: keyboards + mice (boot protocol), hot plug, works with no PS/2 controller |
 | 10 | Nova desktop + shell ✅ | 10a: the Nova desktop (windows, taskbar, launcher; Terminal, Files, System). 10b: the shell is a user program (`nsh`) with pipes and background jobs |
 | 11 | Login + desktop polish ✅ | Password lock screen (at boot, Lock, Ctrl+Alt+L, `lock`/`passwd`), salted PBKDF2 records, hover highlights, Alt+Tab, Restart |
+| 12 | Apps + window sizing ✅ | Calculator, Notes, Settings (from scratch); maximise/restore and resize for every window (the Terminal's grid follows); idle auto-lock; the `/system` folder |
+| 13 | Real-hardware USB input | Keyboard and mouse work on the ASUS PC (needs the on-screen `xhci:`/`usb:` log from the diagnostic stick) |
+| 14 | Networking | NIC driver (virtio-net in QEMU, then the PC's Realtek RTL8111), Ethernet/ARP/IPv4/UDP/TCP, DHCP, DNS, an HTTP client; tested in QEMU first |
+| 15 | **Integrating Vexa** | See "Vexa on Nova" below |
 
 Later: USB hubs and storage, networking, GPU, real-hardware testing on a USB stick.
+
+## Vexa on Nova (the plan)
+
+Vexa (`D:\Dev\Vexa`, the Nova browser) is an Electron/Chromium app. Chromium needs a POSIX-like OS,
+threads, a GPU stack, a JavaScript engine and millions of lines of C++, so Vexa itself cannot run on this
+kernel. "Vexa on Nova" is a Nova-native browser that carries Vexa's name, look and privacy defaults, built
+in steps, each tested in QEMU:
+
+1. **Networking (stage 14)** must exist first: NIC driver, TCP/IP, DHCP, DNS, HTTP/1.1 client.
+2. **Vexa Lite window:** tabs, address bar, back/forward, bookmarks in `/system/vexa/`, Vexa's violet theme;
+   opens local pages (`/system/vexa/start.html`, help pages) and `http://` pages.
+3. **Renderer (`crates/html`, host-tested):** HTML tokenizer + tree builder, a CSS subset (colours, fonts by
+   size, margins/padding, block/inline flow, simple flexbox later), text layout with wrapping, links,
+   images (BMP/PNG decoder from scratch).
+4. **HTTPS:** TLS 1.3 from scratch (X25519, AES-GCM or ChaCha20-Poly1305, SHA-256, certificate checking
+   against a root store). The hardest and most security-sensitive step: needs careful review and test vectors.
+5. **Scripting:** a small JavaScript interpreter is a large project of its own; decide later whether Vexa on
+   Nova stays a fast, script-free reader.
+6. **Shared identity with desktop Vexa:** same name, icon, colours, start page and settings vocabulary.
+
+## Stage 12 notes: apps, window sizing, `/system`
+
+* **Window manager:** every app window can be **maximised/restored** (new button between minimise and
+  close) and **resized** by dragging its right edge, bottom edge or the bottom-right corner (an outline shows
+  the new size; applied on release, so nothing is re-allocated per mouse move). `Event::Resized(id)` makes
+  the app redraw at the new size. The **Terminal** follows too: `Grid::resize` keeps the rows ending at the
+  cursor (the shell's prompt never disappears).
+* **Calculator** (`crates/desktop/src/calc.rs`, 5 tests): exact decimal arithmetic (9 places, `i128`, every
+  operation checked: 0.1 + 0.2 = 0.3), immediate execution like a pocket calculator, %, x^2, sqrt, 1/x, +/-,
+  CE/C/backspace, history panel when the window is wide (click to reuse), full keyboard support.
+* **Notes** (`notes.rs`, 7 tests): text editor with line numbers, auto-indent, undo/redo (Ctrl+Z/Y, typing
+  undone a word at a time), New/Open/Save/Save as (toolbar and Ctrl+N/O/S, path prompt; bare names go to
+  `/documents`), unsaved-changes guard, horizontal/vertical scrolling, click to place the cursor. Files:
+  **Ctrl+E** edits the selected file in Notes. 256 KiB limit.
+* **Settings** (`settings.rs`, 3 tests): lock after idle (never/1/5/10/30/60 min), time zone (UTC offset in
+  half hours: the CMOS clock is UTC), wallpaper theme (Night, Ocean, Forest, Ember), set/change password,
+  About this PC. Saved as plain `key = value` text; bad values are ignored.
+* **`/system`** (`kernel/src/system.rs`), Nova's "Windows folder": `README.txt`, `settings`, `password`,
+  `logs/boot.log` (each boot), plus `/documents`. Created at boot when missing.
+* **Idle auto-lock:** `ps2.rs` records the tick of every key/mouse event (PS/2 and USB); the desktop locks
+  after the Settings time, only when a password is set.
+* **Tests:** `boot_test.py --apps`: Calculator by mouse and keyboard (7+8=15, 12*3=36, 0.1+0.2=0.3), corner
+  resize, Notes type/save/new/open, maximise and restore, Settings wallpaper saved to `/system/settings`,
+  Terminal maximised (grid grows), `/system/README.txt` and `logs/boot.log` exist; screenshots
+  `apps_calculator.png`, `apps_notes.png`, `apps_settings.png`, `apps_terminal_max.png`.
+* Gaps: no text selection/clipboard in Notes; no double-click (to maximise or open); windows can't be
+  resized from the left/top edges; the time zone has no daylight saving.
 
 ## Stage 11 notes: login and desktop polish
 
