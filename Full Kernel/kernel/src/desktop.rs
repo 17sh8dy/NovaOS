@@ -11,11 +11,12 @@
 //! their title bars and buttons, menu entries, and what each click did.
 
 use crate::files::VFS;
-use crate::gui::{self, FILES, SYSTEM, TERMINAL};
-use crate::{cpu, files, heap, interrupts, kprintln, pmm, process, ps2, rtc, sched, xhci};
+use crate::gui::{self, FILES, LOCK, PASSWORD, RESTART, SYSTEM, TERMINAL};
+use crate::{auth, cpu, files, heap, interrupts, kprintln, pmm, process, ps2, rtc, sched, xhci};
 use alloc::string::String;
 use alloc::vec::Vec;
 use nova_desktop::Event;
+use nova_desktop::lock::{LockKey, Mode, Outcome};
 use nova_desktop::apps::{Entry, Nav, PREVIEW_BYTES, Request, join};
 use nova_fs::NodeKind;
 use nova_gfx::Rect;
@@ -27,6 +28,9 @@ fn name(id: u32) -> &'static str {
         TERMINAL => "Terminal",
         FILES => "Files",
         SYSTEM => "System",
+        LOCK => "Lock",
+        PASSWORD => "Password",
+        RESTART => "Restart",
         _ => "?",
     }
 }
@@ -123,6 +127,92 @@ fn format_clock(t: &nova_x86::rtc::DateTime) -> String {
     alloc::format!("{:02}:{:02}", t.hour, t.minute)
 }
 
+/// "Tuesday 17 November 2026" (for the lock screen).
+fn format_date(t: &nova_x86::rtc::DateTime) -> String {
+    const DAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+    let (m, d) = (t.month.clamp(1, 12) as usize, t.day as usize);
+    // Sakamoto's weekday formula (0 = Sunday).
+    const T: [usize; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+    let y = t.year as usize - usize::from(m < 3);
+    let wd = (y + y / 4 - y / 100 + y / 400 + T[m - 1] + d) % 7;
+    alloc::format!("{} {} {} {}", DAYS[wd], d, MONTHS[m - 1], t.year)
+}
+
+// ---- Login and lock ----
+
+/// Locks the screen. With no password set yet, asks for one instead.
+pub fn lock_now() {
+    if auth::is_set() {
+        gui::with(|g| g.desk.show_lock(Mode::Unlock));
+        kprintln!("login: screen locked");
+    } else {
+        gui::with(|g| g.desk.show_lock(Mode::Create));
+        kprintln!("login: no password yet; the card asks for a new one");
+    }
+}
+
+/// Opens the card that sets (or changes) the password.
+pub fn password_card() {
+    let mode = if auth::is_set() { Mode::Change } else { Mode::Create };
+    gui::with(|g| g.desk.show_lock(mode));
+    kprintln!("login: password card open ({})", if mode == Mode::Change { "change" } else { "create" });
+}
+
+/// Acts on what the lock screen asked for. Hashing happens outside the GUI lock.
+fn lock_outcome(out: Outcome) {
+    match out {
+        Outcome::None => {}
+        Outcome::Check(guess) => {
+            let ok = auth::verify(&guess);
+            drop(guess);
+            let (next, failures, mode) = gui::with(|g| {
+                let next = g.desk.lock_checked(ok);
+                let f = g.desk.lock_state().map_or(0, |l| l.failures());
+                (next, f, g.desk.lock_shown())
+            })
+            .unwrap_or((Outcome::None, 0, None));
+            match (ok, &next) {
+                (true, Outcome::Close) => kprintln!("login: unlocked"),
+                (true, _) => kprintln!("login: current password accepted"),
+                (false, _) => kprintln!("login: wrong password ({failures} in a row)"),
+            }
+            if mode.is_none() {
+                gui::with(|g| g.refresh_cursor());
+            }
+        }
+        Outcome::Set(new) => {
+            let result = auth::set(&new);
+            drop(new);
+            gui::with(|g| g.desk.lock_saved(result.as_deref().map_err(|e| e.as_str())));
+        }
+        Outcome::Close => {
+            kprintln!("login: card closed");
+            gui::with(|g| g.refresh_cursor());
+        }
+    }
+}
+
+/// A key typed while the lock screen or the password card is up.
+fn lock_input(input: Input) {
+    let k = match input.action {
+        Action::Char(c) if !input.ctrl && !input.alt => LockKey::Char(c),
+        Action::Key(Key::Enter) => LockKey::Enter,
+        Action::Key(Key::Backspace) => LockKey::Backspace,
+        Action::Key(Key::Escape) => LockKey::Escape,
+        _ => return,
+    };
+    let out = gui::with(|g| g.desk.lock_key(k)).unwrap_or(Outcome::None);
+    lock_outcome(out);
+}
+
+fn restart() -> ! {
+    kprintln!("power: restarting");
+    files::shutdown();
+    ps2::reset_cpu();
+    crate::safety::reset_machine()
+}
+
 /// The System window's lines (gathered outside the GUI lock).
 fn system_lines() -> Vec<(String, String)> {
     let mut l: Vec<(String, String)> = Vec::new();
@@ -183,11 +273,18 @@ fn handle(e: Event) {
     match e {
         Event::Focused(id) => kprintln!("wm: focus {}", name(id)),
         Event::MenuOpened => {
-            let items = gui::with(|g| (0..3).map(|i| center(g.desk.menu_item(i))).collect::<Vec<_>>()).unwrap_or_default();
-            let s: Vec<String> = items.iter().zip(["Terminal", "Files", "System"]).map(|((x, y), n)| alloc::format!("{n} at ({x}, {y})")).collect();
+            let items = gui::with(|g| {
+                let labels: Vec<String> = g.desk.menu().iter().map(|(l, _)| l.clone()).collect();
+                labels.into_iter().enumerate().map(|(i, l)| (l, center(g.desk.menu_item(i)))).collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+            let s: Vec<String> = items.iter().map(|(n, (x, y))| alloc::format!("{n} at ({x}, {y})")).collect();
             kprintln!("desktop: menu opened: {}", s.join(", "));
         }
         Event::MenuClosed => kprintln!("desktop: menu closed"),
+        Event::MenuChose(LOCK) => lock_now(),
+        Event::MenuChose(PASSWORD) => password_card(),
+        Event::MenuChose(RESTART) => restart(),
         Event::MenuChose(id) => open_app(id),
         Event::Closed(id) | Event::Minimized(id) => {
             let what = if matches!(e, Event::Closed(_)) { "closed" } else { "minimized" };
@@ -211,6 +308,33 @@ fn handle(e: Event) {
 
 /// Keys typed while a window other than the Terminal has focus.
 fn ui_key(input: Input) {
+    // Desktop shortcuts, whatever has the focus.
+    if input.ctrl && input.alt && matches!(input.action, Action::Char('l' | 'L')) {
+        if gui::with(|g| g.desk.lock_shown()).flatten().is_none() {
+            lock_now();
+        }
+        return;
+    }
+    if gui::with(|g| g.desk.lock_shown()).flatten().is_some() {
+        lock_input(input);
+        return;
+    }
+    if input.alt && matches!(input.action, Action::Key(Key::Tab)) {
+        if let Some(e) = gui::with(|g| {
+            let e = g.desk.cycle();
+            g.refresh_cursor();
+            e
+        })
+        .flatten()
+        {
+            let id = match e {
+                Event::Focused(id) | Event::Restored(id) => id,
+                _ => 0,
+            };
+            kprintln!("wm: alt+tab to {}", name(id));
+        }
+        return;
+    }
     let focused = gui::with(|g| g.desk.focused()).flatten();
     if focused != Some(FILES) {
         return;
@@ -262,6 +386,10 @@ pub fn run(irq_mode: bool) -> ! {
     let mut clock_logged = false;
 
     log_geometry(TERMINAL, "open");
+    if auth::is_set() {
+        gui::with(|g| g.desk.show_lock(Mode::Unlock));
+        kprintln!("login: locked at boot; the password opens the desktop");
+    }
     if let Some(l) = gui::with(|g| center(g.desk.launcher())) {
         kprintln!("desktop: ready; launcher at ({}, {})", l.0, l.1);
     }
@@ -313,10 +441,13 @@ pub fn run(irq_mode: bool) -> ! {
                         kprintln!("clock: {}-{:02}-{:02} {:02}:{:02}:{:02} (CMOS RTC)", t.year, t.month, t.day, t.hour, t.minute, t.second);
                     }
                     gui::set_clock(&format_clock(&t));
+                    let date = format_date(&t);
+                    gui::with(|g| g.desk.set_date(&date));
                 }
                 None => gui::set_clock(&alloc::format!("up {secs}s")),
             }
             refresh_system();
+            gui::with(|g| g.desk.lock_tick(secs));
         }
         // The text cursor blinks twice a second.
         if ticks / (interrupts::TICK_HZ as u64 / 2) != last_blink {

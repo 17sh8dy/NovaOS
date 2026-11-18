@@ -144,9 +144,18 @@ impl KeyQueue {
     }
 }
 
+/// Keys the desktop always takes, whatever has the focus: Alt+Tab (next
+/// window) and Ctrl+Alt+L (lock).
+fn desktop_shortcut(i: &Input) -> bool {
+    use nova_kbd::{Action, Key};
+    let alt_tab = !i.ctrl && matches!(i.action, Action::Key(Key::Tab));
+    let ctrl_alt_l = i.ctrl && matches!(i.action, Action::Char('l' | 'L'));
+    i.alt && (alt_tab || ctrl_alt_l)
+}
+
 /// Queues a key for whoever has the focus. Returns true if it went to the shell.
 fn push_key(input: Input) -> bool {
-    if TERMINAL_FOCUS.load(Ordering::SeqCst) {
+    if TERMINAL_FOCUS.load(Ordering::SeqCst) && !desktop_shortcut(&input) {
         KEYS.with(|k| k.push(input));
         true
     } else {

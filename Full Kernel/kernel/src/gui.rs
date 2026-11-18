@@ -32,9 +32,13 @@ const PALETTE: [Color; 4] = [rgb(0xE8, 0xEC, 0xFF), rgb(0x6E, 0xE7, 0xD8), rgb(0
 pub const TERMINAL: u32 = 1;
 pub const FILES: u32 = 2;
 pub const SYSTEM: u32 = 3;
+/// Launcher entries that are actions, not windows.
+pub const LOCK: u32 = 100;
+pub const PASSWORD: u32 = 101;
+pub const RESTART: u32 = 102;
 
 /// The line under the name on the wallpaper.
-pub const SUBTITLE: &str = "Full Kernel - Stage 10";
+pub const SUBTITLE: &str = "Full Kernel - Stage 11";
 
 pub struct Gui {
     screen: Screen,
@@ -60,7 +64,8 @@ impl Gui {
             self.desk.compose(&mut self.back, r);
             self.screen.present(&self.back, r);
         }
-        crate::ps2::set_terminal_focus(self.desk.focused() == Some(TERMINAL));
+        // While the lock screen (or the password card) is up, no key reaches the shell.
+        crate::ps2::set_terminal_focus(self.desk.focused() == Some(TERMINAL) && self.desk.lock_shown().is_none());
     }
 
     /// Repaints the console rows that changed (and the block cursor) into the Terminal window.
@@ -154,7 +159,14 @@ pub fn init(screen: Screen, info: &BootInfo, free_mib: u64, cpus: usize) {
     let rows = ((work.h * 68 / 100) / ch).max(12) as usize;
     let (tx, ty) = (32 * u, 28 * u);
     desk.add_window(TERMINAL, "Terminal", (cols * cw as usize + 2 * pad as usize, rows * ch as usize + 2 * pad as usize), (tx, ty), PANEL);
-    desk.set_menu(alloc::vec![(String::from("Terminal"), TERMINAL), (String::from("Files"), FILES), (String::from("System"), SYSTEM)]);
+    desk.set_menu(alloc::vec![
+        (String::from("Terminal"), TERMINAL),
+        (String::from("Files"), FILES),
+        (String::from("System"), SYSTEM),
+        (String::from("Lock"), LOCK),
+        (String::from("Password"), PASSWORD),
+        (String::from("Restart"), RESTART),
+    ]);
     desk.set_note(&alloc::format!("{cpus} CPU(s)"));
 
     let boot_lines = alloc::vec![

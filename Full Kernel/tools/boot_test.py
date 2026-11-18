@@ -502,6 +502,110 @@ def screenshot(qmp, name):
     ppm.unlink(missing_ok=True)
 
 
+def login_test(qmp, serial, password) -> str | None:
+    """A kernel built with a password (build.ps1 -TestPassword) starts locked:
+    typing goes to the lock screen, never the shell; wrong passwords are refused,
+    the right one unlocks; `lock`, Ctrl+Alt+L and `passwd` (change it) all work."""
+
+    def log():
+        return read_log(serial)
+
+    def wait_for(pattern, seconds=15):
+        end = time.time() + seconds
+        while time.time() < end:
+            m = re.search(pattern, log())
+            if m:
+                return m
+            time.sleep(0.1)
+        return None
+
+    def count(pattern):
+        return len(re.findall(pattern, log()))
+
+    def wait_new(pattern, before, seconds=15):
+        end = time.time() + seconds
+        while time.time() < end:
+            if count(pattern) > before:
+                return True
+            time.sleep(0.1)
+        return False
+
+    def attempt(text, expect):
+        before = count(expect)
+        type_text(qmp, text + "\n")
+        return wait_new(expect, before)
+
+    def ctrl_alt(key):
+        down = lambda k: {"type": "key", "data": {"down": True, "key": {"type": "qcode", "data": k}}}
+        up = lambda k: {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": k}}}
+        qmp.cmd("input-send-event", events=[down("ctrl"), down("alt"), down(key), up(key), up("alt"), up("ctrl")])
+        time.sleep(0.1)
+
+    if not wait_for(r"login: a password is set \(built in"):
+        return "the kernel did not find the built-in password"
+    if not wait_for(r"login: locked at boot"):
+        return "the desktop did not start locked"
+    if not wait_for(r"shell: ready"):
+        return "the shell never started"
+    time.sleep(0.5)
+    screenshot(qmp, "login_locked")
+    # Typing goes to the lock screen: a command is just a wrong password.
+    if not attempt("echo leaked", r"login: wrong password \(1 in a row\)"):
+        return "a wrong password was not refused"
+    if "con: leaked" in log():
+        return "keys typed on the lock screen reached the shell"
+    if not attempt("nope", r"login: wrong password \(2 in a row\)"):
+        return "the second wrong password was not counted"
+    if not attempt(password, r"login: unlocked"):
+        return "the right password did not unlock"
+    type_text(qmp, "echo after login\n")
+    if not wait_for(r"con: after login"):
+        return "the shell did not get keys after unlocking"
+    # The `lock` command, then Ctrl+Alt+L.
+    before = count(r"login: screen locked")
+    type_text(qmp, "lock\n")
+    if not wait_new(r"login: screen locked", before):
+        return "'lock' did not lock the screen"
+    if not attempt(password, r"login: unlocked"):
+        return "could not unlock after 'lock'"
+    before = count(r"login: screen locked")
+    ctrl_alt("l")
+    if not wait_new(r"login: screen locked", before):
+        return "Ctrl+Alt+L did not lock the screen"
+    if not attempt(password, r"login: unlocked"):
+        return "could not unlock after Ctrl+Alt+L"
+    # Change the password, then only the new one works.
+    type_text(qmp, "passwd\n")
+    if not wait_for(r"login: password card open \(change\)"):
+        return "'passwd' did not open the change card"
+    if not attempt("wrong", r"login: wrong password \(1 in a row\)"):
+        return "the change card accepted a wrong current password"
+    if not attempt(password, r"login: current password accepted"):
+        return "the change card refused the current password"
+    new = "Second-pw2"
+    type_text(qmp, new + "\n" + new + "\n")
+    if not wait_for(r"login: new password saved to /system/password"):
+        return "the new password was not saved"
+    before = count(r"login: card closed")
+    press(qmp, "spc")
+    if not wait_new(r"login: card closed", before):
+        return "the card did not close after saving"
+    before = count(r"login: screen locked")
+    type_text(qmp, "lock\n")
+    if not wait_new(r"login: screen locked", before):
+        return "'lock' did not lock the screen (second time)"
+    if not attempt(password, r"login: wrong password \(1 in a row\)"):
+        return "the old password still worked after changing it"
+    if not attempt(new, r"login: unlocked"):
+        return "the new password did not unlock"
+    type_text(qmp, "cat /system/password\n")
+    if not wait_for(r"con: nova-pbkdf2-sha256\$100000\$[0-9a-f]{32}\$[0-9a-f]{64}"):
+        return "/system/password does not hold a PBKDF2 record"
+    if password in log().replace("--login", "") or new in log():
+        return "a password appeared in the log"
+    return None
+
+
 def desktop_test(qmp, serial) -> str | None:
     """Uses the desktop like a person would, through QEMU's mouse and keyboard:
     the launcher, the Files window (keyboard browsing, preview), dragging,
@@ -808,6 +912,7 @@ def main() -> int:
     ap.add_argument("--expect-exit", action="store_true", help="after the --expect text appears, QEMU must also exit by itself (the guest reset the machine; QEMU runs with -no-reboot)")
     ap.add_argument("--then-key", action="store_true", help="after the --expect text appears, press a key and require 'restart stopped' in the log and QEMU still running")
     ap.add_argument("--nsh", action="store_true", help="the user-space shell: pipelines, cd, background jobs, Ctrl+C, exit")
+    ap.add_argument("--login", metavar="PASSWORD", help="the kernel was built with this test password: lock screen, wrong/right password, lock, Ctrl+Alt+L, passwd")
     ap.add_argument("--desktop", action="store_true", help="use the desktop: launcher, Files, dragging, focus, System, taskbar")
     ap.add_argument("--usb", action="store_true", help="attach a USB keyboard + mouse (QEMU input goes to them) and test USB")
     ap.add_argument("--fresh-disk", action="store_true", help="start from a blank virtual disk")
@@ -929,6 +1034,14 @@ def main() -> int:
                 reason = "nsh test: " + problem
             else:
                 print("nsh: built-ins, cd, pipelines (2 and 3 programs), background jobs, Ctrl+C and exit/restart all worked")
+
+        if ok and opts.login and not opts.expect:
+            problem = login_test(qmp, serial, opts.login)
+            if problem:
+                ok = False
+                reason = "login test: " + problem
+            else:
+                print("Login: started locked, keys never reached the shell, wrong passwords refused, unlock, lock, Ctrl+Alt+L and passwd all worked")
 
         if ok and opts.desktop and not opts.expect:
             problem = desktop_test(qmp, serial)

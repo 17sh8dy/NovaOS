@@ -137,7 +137,7 @@ fn draw(left: u32) {
 
 /// Resets the PC: the chipset reset register, then the keyboard controller's
 /// pulse, then (if neither worked) a triple fault.
-fn reset_machine() -> ! {
+pub fn reset_machine() -> ! {
     for (port, value) in nova_safety::RESET_STEPS {
         // SAFETY: the ordinary PC reset ports; the machine is about to restart.
         unsafe { outb(port, value) };

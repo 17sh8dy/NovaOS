@@ -290,3 +290,106 @@ fn clock_and_note_damage_the_taskbar() {
     d.set_note("4 CPUs");
     assert!(!d.take_damage().is_empty());
 }
+
+// ---- Lock screen, hover, Alt+Tab ----
+
+#[test]
+fn lock_screen_swallows_clicks_and_covers_windows() {
+    use crate::lock::{LockKey, Mode, Outcome};
+    let mut d = desk();
+    let mut before = Canvas::new(W, H, 0);
+    d.compose(&mut before, d.screen());
+    d.show_lock(Mode::Unlock);
+    assert_eq!(d.lock_shown(), Some(Mode::Unlock));
+    assert_eq!(d.take_damage(), vec![d.screen()], "locking repaints everything");
+    // Nothing underneath can be clicked, dragged or cycled to.
+    let title = d.chrome(1).unwrap().0;
+    assert!(click(&mut d, title.x + 5, title.y + 5).is_empty());
+    assert_eq!(d.hit(title.x + 5, title.y + 5), Hit::Desktop);
+    assert_eq!(d.cycle(), None);
+    assert_eq!(d.stacking(), vec![1, 2]);
+    // The window's red content is not visible while locked.
+    let mut locked = Canvas::new(W, H, 0);
+    d.compose(&mut locked, d.screen());
+    let c = d.content_rect(1).unwrap();
+    assert_eq!(before.get(c.x + 2, c.y + 2), Some(RED));
+    assert_ne!(locked.get(c.x + 2, c.y + 2), Some(RED));
+    // Typing only touches the card.
+    d.take_damage();
+    d.lock_key(LockKey::Char('a'));
+    let card = crate::lock::Lock::card(&d.m, d.screen());
+    assert_eq!(d.take_damage(), vec![card]);
+    assert_eq!(d.lock_key(LockKey::Enter), Outcome::Check(String::from("a")));
+    assert_eq!(d.lock_checked(false), Outcome::None);
+    assert!(d.lock_shown().is_some());
+    d.lock_key(LockKey::Enter);
+    assert_eq!(d.lock_checked(true), Outcome::Close);
+    assert_eq!(d.lock_shown(), None);
+    d.pointer_moved(W as i32 / 2, H as i32 / 2);
+    let mut after = Canvas::new(W, H, 0);
+    d.compose(&mut after, d.screen());
+    assert_eq!(after.pixels(), before.pixels(), "unlocking gives the same desktop back");
+}
+
+#[test]
+fn locked_screen_composes_the_same_in_pieces() {
+    let mut d = desk();
+    d.set_clock("12:34");
+    d.set_date("Tuesday 17 November 2026");
+    d.show_lock(crate::lock::Mode::Unlock);
+    d.lock_key(crate::lock::LockKey::Char('x'));
+    let mut whole = Canvas::new(W, H, 0);
+    d.compose(&mut whole, d.screen());
+    let mut pieces = Canvas::new(W, H, 0);
+    for y in (0..H as i32).step_by(37) {
+        for x in (0..W as i32).step_by(53) {
+            d.compose(&mut pieces, Rect::new(x, y, 53, 37));
+        }
+    }
+    assert_eq!(whole.pixels(), pieces.pixels());
+}
+
+#[test]
+fn buttons_light_up_under_the_pointer() {
+    let mut d = desk();
+    let close = d.chrome(2).unwrap().1;
+    let (cx, cy) = center(close);
+    let mut before = Canvas::new(W, H, 0);
+    d.compose(&mut before, d.screen());
+    d.pointer_moved(cx, cy);
+    assert_eq!(d.hovered(), Hit::Close(2));
+    let dmg = d.take_damage();
+    assert!(dmg.iter().any(|r| r.intersect(&close) == close), "the close button is repainted");
+    let mut lit = Canvas::new(W, H, 0);
+    d.compose(&mut lit, d.screen());
+    assert_eq!(lit.get(close.x + 1, close.y + 1), Some(DANGER));
+    assert_ne!(before.get(close.x + 1, close.y + 1), Some(DANGER));
+    // Moving within the same button repaints only the pointer.
+    d.pointer_moved(cx + 1, cy);
+    let ptr = d.take_damage().iter().fold(Rect::default(), |a, r| a.union(r));
+    assert!(ptr.w < close.w + 40, "no big repaint for a 1-pixel move");
+    // Off the button: back to normal.
+    d.pointer_moved(5, 5);
+    assert_eq!(d.hovered(), Hit::Desktop);
+    let mut off = Canvas::new(W, H, 0);
+    d.compose(&mut off, d.screen());
+    assert_eq!(off.get(close.x + 1, close.y + 1), before.get(close.x + 1, close.y + 1));
+}
+
+#[test]
+fn alt_tab_visits_every_window() {
+    let mut d = desk();
+    d.add_window(3, "Three", (100, 80), (400, 300), RED);
+    assert_eq!(d.stacking(), vec![1, 2, 3]);
+    d.minimize(2);
+    assert_eq!(d.cycle(), Some(Event::Focused(1)));
+    assert_eq!(d.focused(), Some(1));
+    assert_eq!(d.cycle(), Some(Event::Restored(2)), "minimised windows come back too");
+    assert_eq!(d.state(2), Some(State::Open));
+    assert_eq!(d.cycle(), Some(Event::Focused(3)));
+    assert_eq!(d.cycle(), Some(Event::Focused(1)));
+    // Closed windows are skipped; a lone window has nowhere to go.
+    d.close(2);
+    d.close(3);
+    assert_eq!(d.cycle(), None);
+}

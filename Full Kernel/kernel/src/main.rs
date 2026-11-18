@@ -24,6 +24,7 @@ extern crate alloc;
 mod acpi;
 mod ahci;
 mod apic;
+mod auth;
 mod bootdata;
 mod bootlog;
 mod cpu;
@@ -312,6 +313,7 @@ fn kmain(boot_copy: &'static BootInfo) -> ! {
 
         // ---- Stage 9: storage (SATA + NVMe) and files ----------------------
         files::init(&devices);
+        auth::init();
 
         // ---- USB keyboards and mice (xHCI) -----------------------------------
         let usb = xhci::init(&devices);

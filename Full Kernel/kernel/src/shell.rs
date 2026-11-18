@@ -210,6 +210,8 @@ fscheck         check the disk's file system; sync: write everything out
 usb             USB keyboards and mice attached
 version         kernel version
 panic           deliberately crash the kernel (shows the panic screen)
+lock            lock the screen (asks for a password first if none is set)
+passwd          set or change the login password (on the lock-screen card)
 reboot          restart the machine
 halt            stop everything
 Keys: Left/Right/Home/End/Delete edit, Up/Down browse history,
@@ -458,11 +460,20 @@ pub fn execute(line: &str) {
                 outln(&l);
             }
         }
+        "lock" => {
+            outln(if crate::auth::is_set() { "locking the screen" } else { "no password yet: choose one on the card" });
+            crate::desktop::lock_now();
+        }
+        "passwd" => {
+            outln("type it on the card (the characters are never shown)");
+            crate::desktop::password_card();
+        }
         "reboot" => {
             files::shutdown();
             outln("restarting...");
             ps2::reset_cpu();
-            errln("the keyboard controller did not reset the machine");
+            errln("the keyboard controller did not reset the machine; trying the chipset");
+            crate::safety::reset_machine();
         }
         "halt" => {
             files::shutdown();

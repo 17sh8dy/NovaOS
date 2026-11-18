@@ -94,6 +94,10 @@ try {
             & (Join-Path $PSScriptRoot 'build.ps1') -Fault deskhang -Safe '3,60,6'
             python -I tools\boot_test.py --shot safe_deskstuck --expect 'NOVA WATCHDOG: DESKTOP STUCK' --expect 'safety: resetting the machine now' --expect-exit
         }
+        Step 'login: locked at boot, wrong/right password, lock, Ctrl+Alt+L, passwd' {
+            & (Join-Path $PSScriptRoot 'build.ps1') -TestPassword 'Nova-pass1'
+            python -I tools\boot_test.py --fresh-disk --login 'Nova-pass1' --shot login
+        }
         Step 'safety on, normal use: never trips' {
             & (Join-Path $PSScriptRoot 'build.ps1') -Safe '3,8,6'
             python -I tools\boot_test.py --fresh-disk --mouse --shell --nsh --desktop --user --forbid 'safety: restarting' --forbid 'WATCHDOG' --shot safe_normal

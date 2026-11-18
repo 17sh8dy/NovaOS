@@ -11,6 +11,10 @@ name = "nova-apic"
 version = "0.1.0"
 
 [[package]]
+name = "nova-auth"
+version = "0.1.0"
+
+[[package]]
 name = "nova-boot"
 version = "0.1.0"
 dependencies = [
@@ -61,6 +65,7 @@ version = "0.1.0"
 dependencies = [
  "nova-acpi",
  "nova-apic",
+ "nova-auth",
  "nova-bootinfo",
  "nova-console",
  "nova-desktop",

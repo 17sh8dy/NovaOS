@@ -25,6 +25,9 @@ extern crate std;
 use alloc::string::String;
 use alloc::vec::Vec;
 pub mod apps;
+pub mod lock;
+
+use lock::{Lock, LockKey, Mode, Outcome};
 
 use nova_gfx::{Canvas, Color, Rect, mix, rgb, text_height, text_width};
 
@@ -45,6 +48,7 @@ const BAR: Color = rgb(0x0C, 0x0F, 0x26);
 const BAR_LINE: Color = rgb(0x23, 0x29, 0x58);
 const BUTTON: Color = rgb(0x16, 0x1B, 0x3C);
 const BUTTON_ACTIVE: Color = rgb(0x24, 0x2C, 0x5E);
+const BUTTON_HOVER: Color = rgb(0x1D, 0x24, 0x4C);
 const MENU: Color = rgb(0x11, 0x14, 0x30);
 
 const ARROW: [&str; 17] = [
@@ -155,8 +159,13 @@ pub struct Desktop {
     menu_open: bool,
     pointer: (i32, i32),
     clock: String,
+    date: String,
     note: String,
     damage: Vec<Rect>,
+    /// What the pointer is over (buttons light up).
+    hover: Hit,
+    /// The lock screen / password card, when shown (it covers everything).
+    lock: Option<Lock>,
 }
 
 impl Desktop {
@@ -176,8 +185,11 @@ impl Desktop {
             menu_open: false,
             pointer: (w as i32 / 2, h as i32 / 2),
             clock: String::new(),
+            date: String::new(),
             note: String::new(),
             damage: Vec::new(),
+            hover: Hit::Desktop,
+            lock: None,
         };
         d.paint_wallpaper(subtitle);
         d.damage_all();
@@ -455,6 +467,11 @@ impl Desktop {
         self.menu = items;
     }
 
+    /// The launcher's entries: (label, id).
+    pub fn menu(&self) -> &[(String, u32)] {
+        &self.menu
+    }
+
     pub fn menu_is_open(&self) -> bool {
         self.menu_open
     }
@@ -473,6 +490,19 @@ impl Desktop {
             self.damage_taskbar();
             self.clock = String::from(clock);
             self.damage_taskbar();
+            if self.lock.is_some() {
+                self.add_damage(Lock::clock_rect(&self.m, self.screen()));
+            }
+        }
+    }
+
+    /// The date under the lock screen's clock.
+    pub fn set_date(&mut self, date: &str) {
+        if self.date != date {
+            self.date = String::from(date);
+            if self.lock.is_some() {
+                self.add_damage(Lock::clock_rect(&self.m, self.screen()));
+            }
         }
     }
 
@@ -493,6 +523,9 @@ impl Desktop {
 
     /// What is at (x, y).
     pub fn hit(&self, x: i32, y: i32) -> Hit {
+        if self.lock.is_some() {
+            return Hit::Desktop;
+        }
         if self.menu_open && self.menu_rect().contains(x, y) {
             return (0..self.menu.len()).find(|&i| self.menu_item(i).contains(x, y)).map_or(Hit::Desktop, Hit::MenuItem);
         }
@@ -536,12 +569,44 @@ impl Desktop {
         if let Some((id, gx, gy)) = self.drag {
             self.move_window(id, x - gx, y - gy);
         }
+        let hover = if self.drag.is_some() { Hit::Desktop } else { self.hit(x, y) };
+        self.set_hover(hover);
+    }
+
+    /// The screen rectangle of a hit that lights up under the pointer.
+    fn hover_rect(&self, h: Hit) -> Option<Rect> {
+        match h {
+            Hit::Launcher => Some(self.launcher()),
+            Hit::TaskButton(id) => self.task_buttons().into_iter().find(|(i, _)| *i == id).map(|(_, r)| r),
+            Hit::MenuItem(i) => Some(self.menu_item(i)),
+            Hit::Close(id) => self.find(id).map(|w| self.close_rect(w)),
+            Hit::Minimize(id) => self.find(id).map(|w| self.minimize_rect(w)),
+            _ => None,
+        }
+    }
+
+    fn set_hover(&mut self, h: Hit) {
+        if h == self.hover {
+            return;
+        }
+        let old = core::mem::replace(&mut self.hover, h);
+        for r in [self.hover_rect(old), self.hover_rect(h)].into_iter().flatten() {
+            self.add_damage(r);
+        }
+    }
+
+    /// What the pointer is over.
+    pub fn hovered(&self) -> Hit {
+        self.hover
     }
 
     /// The left button went down at the pointer.
     pub fn press(&mut self) -> Vec<Event> {
         let (x, y) = self.pointer;
         let mut ev = Vec::new();
+        if self.lock.is_some() {
+            return ev;
+        }
         let hit = self.hit(x, y);
         if self.menu_open && !matches!(hit, Hit::MenuItem(_) | Hit::Launcher) {
             self.set_menu_open(false);
@@ -618,6 +683,79 @@ impl Desktop {
         self.drag.map(|d| d.0)
     }
 
+    /// Alt+Tab: brings the window that has waited longest (bottom of the
+    /// stack, minimised ones included) to the front. Repeating it visits them all.
+    pub fn cycle(&mut self) -> Option<Event> {
+        if self.lock.is_some() {
+            return None;
+        }
+        let top = self.windows.iter().rev().find(|w| w.state == State::Open).map(|w| w.id);
+        let next = self.windows.iter().find(|w| w.state != State::Closed && Some(w.id) != top)?.id;
+        let was = self.state(next);
+        self.set_menu_open(false);
+        self.show(next);
+        Some(if was == Some(State::Minimized) { Event::Restored(next) } else { Event::Focused(next) })
+    }
+
+    // ---- The lock screen ----
+
+    /// Shows the lock screen (`Mode::Unlock`) or the password card. Closes the
+    /// menu and ends any drag; windows stay as they are underneath.
+    pub fn show_lock(&mut self, mode: Mode) {
+        self.set_menu_open(false);
+        self.drag = None;
+        self.set_hover(Hit::Desktop);
+        self.lock = Some(Lock::new(mode));
+        self.damage_all();
+    }
+
+    /// Is the lock screen or the password card up? (Keys must then go to it, never to the shell.)
+    pub fn lock_shown(&self) -> Option<Mode> {
+        self.lock.as_ref().map(|l| l.mode)
+    }
+
+    pub fn lock_state(&self) -> Option<&Lock> {
+        self.lock.as_ref()
+    }
+
+    fn lock_do(&mut self, f: impl FnOnce(&mut Lock) -> Outcome) -> Outcome {
+        let Some(l) = self.lock.as_mut() else { return Outcome::None };
+        let out = f(l);
+        if out == Outcome::Close {
+            self.lock = None;
+            self.damage_all();
+        } else {
+            self.add_damage(Lock::card(&self.m, self.screen()));
+        }
+        out
+    }
+
+    /// A key typed while the lock screen is up. `Outcome::Close` means it went away.
+    pub fn lock_key(&mut self, k: LockKey) -> Outcome {
+        self.lock_do(|l| l.key(k))
+    }
+
+    /// The answer to `Outcome::Check`.
+    pub fn lock_checked(&mut self, ok: bool) -> Outcome {
+        self.lock_do(|l| l.checked(ok))
+    }
+
+    /// The answer to `Outcome::Set`.
+    pub fn lock_saved(&mut self, result: Result<&str, &str>) {
+        self.lock_do(|l| {
+            l.saved(result);
+            Outcome::None
+        });
+    }
+
+    /// Uptime seconds, for the wait after wrong guesses.
+    pub fn lock_tick(&mut self, now: u64) {
+        let changed = self.lock.as_mut().is_some_and(|l| l.tick(now));
+        if changed {
+            self.add_damage(Lock::card(&self.m, self.screen()));
+        }
+    }
+
     // ---- Damage ----
 
     pub fn add_damage(&mut self, r: Rect) {
@@ -678,6 +816,14 @@ impl Desktop {
             return;
         }
         back.blit(&self.wallpaper, area, area.x, area.y, area);
+        if let Some(l) = &self.lock {
+            Self::darken(back, area, area, 120);
+            l.draw(back, &self.m, self.screen(), area, &self.clock, &self.date);
+            if self.pointer_rect().intersects(&area) {
+                self.draw_pointer(back, area);
+            }
+            return;
+        }
         for w in self.windows.iter().filter(|w| w.state == State::Open) {
             if w.rect.union(&self.shadow(w.rect)).intersects(&area) {
                 self.draw_window(back, w, area);
@@ -727,8 +873,15 @@ impl Desktop {
         back.text(tx, ty, ts, if focused { INK } else { DIM }, &title, clip.intersect(&t));
 
         // Minimise and close buttons.
-        for (r, glyph, color) in [(self.minimize_rect(w), "_", DIM), (self.close_rect(w), "x", if focused { DANGER } else { DIM })] {
-            back.fill_clipped(r, mix(if focused { TITLE_FOCUS } else { TITLE }, INK, 18), clip);
+        let base = if focused { TITLE_FOCUS } else { TITLE };
+        for (r, glyph, color, hit) in [(self.minimize_rect(w), "_", DIM, Hit::Minimize(w.id)), (self.close_rect(w), "x", if focused { DANGER } else { DIM }, Hit::Close(w.id))] {
+            let lit = self.hover == hit;
+            let (bg, color) = match (lit, glyph) {
+                (true, "x") => (DANGER, INK),
+                (true, _) => (mix(base, INK, 50), INK),
+                _ => (mix(base, INK, 18), color),
+            };
+            back.fill_clipped(r, bg, clip);
             let gx = r.x + (r.w - text_width(glyph, ts)) / 2;
             let gy = r.y + (r.h - nova_gfx::font::HEIGHT as i32 * ts) / 2 - if glyph == "_" { 2 * u } else { 0 };
             back.text(gx, gy, ts, color, glyph, clip.intersect(&r));
@@ -747,10 +900,11 @@ impl Desktop {
         back.fill_clipped(Rect::new(bar.x, bar.y, bar.w, u), BAR_LINE, clip);
 
         let l = self.launcher();
-        back.fill_clipped(l, if self.menu_open { BUTTON_ACTIVE } else { BUTTON }, clip);
+        let launcher_bg = if self.menu_open { BUTTON_ACTIVE } else if self.hover == Hit::Launcher { BUTTON_HOVER } else { BUTTON };
+        back.fill_clipped(l, launcher_bg, clip);
         let star_r = l.h / 2 - 4 * u;
         let sc = (l.x + 8 * u + star_r, l.y + l.h / 2);
-        let mut star = Canvas::new((2 * star_r + 1) as usize, (2 * star_r + 1) as usize, if self.menu_open { BUTTON_ACTIVE } else { BUTTON });
+        let mut star = Canvas::new((2 * star_r + 1) as usize, (2 * star_r + 1) as usize, launcher_bg);
         star.star(star_r, star_r, star_r, ACCENT);
         back.blit(&star, star.bounds(), sc.0 - star_r, sc.1 - star_r, clip.intersect(&l));
         let ty = l.y + (l.h - text_height(ts)) / 2 + u;
@@ -759,7 +913,14 @@ impl Desktop {
         for (id, r) in self.task_buttons() {
             let Some(w) = self.find(id) else { continue };
             let focused = self.focus == Some(id) && w.state == State::Open;
-            back.fill_clipped(r, if focused { BUTTON_ACTIVE } else { BUTTON }, clip);
+            let bg = if focused {
+                BUTTON_ACTIVE
+            } else if self.hover == Hit::TaskButton(id) {
+                BUTTON_HOVER
+            } else {
+                BUTTON
+            };
+            back.fill_clipped(r, bg, clip);
             if focused {
                 back.fill_clipped(Rect::new(r.x, r.bottom() - 2 * u, r.w, 2 * u), ACCENT, clip);
             }
@@ -790,7 +951,10 @@ impl Desktop {
         let ts = self.m.text;
         for (i, (label, _)) in self.menu.iter().enumerate() {
             let it = self.menu_item(i);
-            if i > 0 {
+            if self.hover == Hit::MenuItem(i) {
+                back.fill_clipped(it, BUTTON_HOVER, clip);
+            }
+            if i > 0 && self.hover != Hit::MenuItem(i) && self.hover != Hit::MenuItem(i - 1) {
                 back.fill_clipped(Rect::new(it.x + 6 * u, it.y, it.w - 12 * u, u), BAR_LINE, clip);
             }
             back.fill_clipped(Rect::new(it.x + 8 * u, it.y + it.h / 2 - 3 * u, 6 * u, 6 * u), ACCENT, clip);

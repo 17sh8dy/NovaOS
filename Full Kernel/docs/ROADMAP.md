@@ -15,8 +15,38 @@ Each stage ends with something that boots and is checked by `tools\test.ps1`.
 | 9 | Storage + files ✅ | AHCI + NVMe drivers, a filesystem, a VFS |
 | 9b | Real-hardware input ✅ | xHCI USB: keyboards + mice (boot protocol), hot plug, works with no PS/2 controller |
 | 10 | Nova desktop + shell ✅ | 10a: the Nova desktop (windows, taskbar, launcher; Terminal, Files, System). 10b: the shell is a user program (`nsh`) with pipes and background jobs |
+| 11 | Login + desktop polish ✅ | Password lock screen (at boot, Lock, Ctrl+Alt+L, `lock`/`passwd`), salted PBKDF2 records, hover highlights, Alt+Tab, Restart |
 
 Later: USB hubs and storage, networking, GPU, real-hardware testing on a USB stick.
+
+## Stage 11 notes: login and desktop polish
+
+* **`crates/auth`** (5 host tests, published vectors): SHA-256, HMAC-SHA-256, PBKDF2-HMAC-SHA-256 and the
+  stored record `nova-pbkdf2-sha256$<iterations>$<salt hex>$<hash hex>` (100,000 iterations, 16-byte salt,
+  constant-time compare). The password itself is never stored or logged.
+* **Where the password comes from** (`kernel/src/auth.rs`): `/system/password` on the root file system
+  (written by the lock screen; on a NovaFS disk it survives a restart, on a RAM root it lasts until restart),
+  else the build (`tools\build.ps1 -Password` asks for one, typed twice and hidden, and bakes only the record
+  into the kernel via `NOVA_PASSWORD`, so a `-NoDisks` stick can be locked), else none: the desktop opens
+  without a login, exactly as before. Salt: RDRAND when the CPU has it, mixed with the TSC and the clock.
+* **`crates/desktop/src/lock.rs`** (5 host tests) + 4 desktop tests: the lock screen (big clock, date, a card
+  with a dot per typed character) and the same card to create/change the password (current, new, again).
+  Pure logic: Enter hands back `Check(guess)` / `Set(new)` and the kernel answers. Three wrong guesses in a
+  row, then each one waits 5 s more (cap 60 s). While it is up, clicks do nothing and **no key reaches the
+  shell** (`Gui::flush` drops the Terminal's keyboard focus).
+* **Locking:** at boot when a password is set; launcher **Lock**; **Ctrl+Alt+L**; the `lock` command. With no
+  password yet, locking opens the "Create a password" card instead. Launcher **Password** / `passwd` open the
+  change card. Ctrl+Alt+L and **Alt+Tab** are routed to the desktop even while the Terminal has focus
+  (`ps2::desktop_shortcut`).
+* **Desktop:** buttons light up under the pointer (launcher, task buttons, menu entries, minimise, close turns
+  red); Alt+Tab brings the longest-waiting window forward (minimised ones too); launcher **Restart** (and
+  `reboot` falls back to the chipset reset when there is no PS/2 controller, as on most new PCs).
+* **Tests:** `boot_test.py --login PASSWORD` with a kernel from `build.ps1 -TestPassword`: starts locked,
+  typed commands never reach the shell, wrong passwords refused and counted, unlock, `lock`, Ctrl+Alt+L,
+  `passwd` (wrong current refused, change saved, old one refused, new one works), `/system/password` holds a
+  record, no password in the log; saves `login_locked.png`.
+* Gaps: one user (no user names); any program can read `/system/password` (no file permissions yet; it is a
+  salted, slow hash); no time zone on the lock clock (the CMOS RTC is usually UTC); no idle auto-lock.
 
 ## Stage 10b notes: the shell as a user program
 

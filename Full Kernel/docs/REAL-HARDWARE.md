@@ -117,6 +117,9 @@ If a BitLocker recovery screen ever appears: type the saved key.
 * **GPU framebuffer:** on this PC it is at 0xD0000000 (below 4 GiB). With
   Resizable BAR it can be far higher; NovaBoot now maps it wherever it is
   (up to 32 TiB).
+* **Login password (`build.ps1 -Password`):** the stick's desktop starts locked. Only build it once the
+  keyboard is known to work on that PC (a PS/2 keyboard, or USB once it works there); otherwise the lock
+  screen cannot be passed. Nothing is written: the password record lives inside KERNEL.ELF.
 * **Keyboard/mouse:** no USB hub support yet: use the rear USB ports on the
   motherboard (not front panel, monitor or dock), or a PS/2 keyboard.
 * **32 threads:** supported (limit 64).

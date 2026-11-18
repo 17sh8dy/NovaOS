@@ -8,6 +8,18 @@ detail; this page is the orientation + current state.
 Machine-specific details (the signing machine's address, drive letters, which PC) are NOT in git (public
 repo). They are in `LOCAL-NOTES.md` next to this folder's `README.md` (git-ignored). Read it too.
 
+## 2026-11-17: stage 11, login password + desktop polish (QEMU only)
+
+* New: a password lock screen (at boot when a password is set, launcher Lock, Ctrl+Alt+L, `lock`, `passwd`),
+  `crates/auth` (SHA-256/PBKDF2), hover highlights, Alt+Tab, launcher Restart. Details: `docs/ROADMAP.md`
+  "Stage 11 notes". No password set = the desktop opens as before (all older tests unchanged).
+* **For a locked USB stick:** `tools\build.ps1 -NoDisks -Safe 30 -Password` (asks for the password; only a
+  salted hash goes into KERNEL.ELF). **But the USB keyboard does not work on the ASUS yet** (below): a locked
+  stick there could not be unlocked. Fix USB input first, or only use `-Password` with a PS/2 keyboard.
+* Seen once in QEMU: `scheduler self-test FAILED: dead threads' stacks are not being reused` (panic at boot);
+  the rerun passed. Pre-existing and intermittent, not investigated yet.
+* Not committed/pushed yet: ask first.
+
 ## Where we left off (2026-11-16, later): FIRST REAL BOOT WORKED
 
 * **Nova booted on the ASUS PC with Secure Boot ON (shim + MOK, pefix.py fix worked).** The desktop loads, but
@@ -19,8 +31,8 @@ repo). They are in `LOCAL-NOTES.md` next to this folder's `README.md` (git-ignor
   replays the `xhci*`/`usb*` log lines above the greeting (diagnostic; built `-NoDisks -Safe 30`, builds OK, not
   yet tried in QEMU or on the stick). Devices: Razer Viper V3 Pro (cable; dongle mode also possible) and a
   SteelSeries Apex Pro TKL Wireless, both composite HID with no hub, both in rear ports.
-* **Next:** sign the new build on the signing machine (it was unreachable at the end of the session), write the
-  stick (confirm first), user boots it and photographs the Terminal window as soon as it appears.
+* **Next:** the new build is signed and on stick E: (5 files hash-verified, qemu-test.sh 4/4 pass). User boots it,
+  and photographs the Terminal window as soon as it appears (lists the xhci/usb lines).
 
 ## Earlier today (2026-11-16)
 
@@ -95,5 +107,6 @@ repo). They are in `LOCAL-NOTES.md` next to this folder's `README.md` (git-ignor
 
 ## Next ideas
 
-First real boot (above); USB hubs; USB storage; MSI; window resize; signals/redirection; FADT-based reset
+Fix USB input on the ASUS (above); window maximise/resize; idle auto-lock; more apps (text editor, settings);
+USB hubs; USB storage; MSI; window resize; signals/redirection; FADT-based reset
 (the safety net uses port 0xCF9, then the keyboard controller, then a triple fault; only QEMU-tested).
