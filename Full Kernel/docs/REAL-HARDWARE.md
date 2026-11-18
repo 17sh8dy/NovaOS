@@ -1,6 +1,7 @@
 # Booting Nova on a real PC
 
-Nova has only run in QEMU. This is the plan for its first real boots, written
+Nova boots on the ASUS PC (Secure Boot ON, shim + MOK) to its desktop; USB keyboard and mouse input does
+not work there yet (see `docs/START-HERE.md`). This is the plan for real boots, written
 for two machines: a **Dell running Ubuntu** (first) and the **main Windows PC**
 (ASUS PRIME B550-PLUS, Ryzen 9 5950X, RX 7800 XT, BitLocker on C:). Rule one:
 **no firmware setting is changed and no disk is written.**

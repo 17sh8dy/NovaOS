@@ -77,7 +77,18 @@ not kernel code. It runs programs and waits for them, connects them with pipes (
 runs jobs in the background (`hello &`), has `cd`/`pwd`, and hands system commands (`disks`, `format`,
 `mem`, `ps`, `install`, ...) to the kernel. `exit` ends it and the Terminal starts a fresh one.
 
-Next stages are in [docs/ROADMAP.md](docs/ROADMAP.md).
+**Stage 11: login password — done.** Set a password (Settings, or `passwd`) and Nova starts at a lock
+screen; Lock from the launcher, Ctrl+Alt+L or `lock`. Only a salted PBKDF2-SHA-256 hash is stored
+(`/system/password`), checked by Nova's own SHA-256 code; wrong guesses wait longer and longer.
+`tools\build.ps1 -Password` bakes the hash into a USB-stick kernel. Also: hover highlights, Alt+Tab, Restart.
+
+**Stage 12: apps and window sizing — done.** **Calculator** (exact decimals: 0.1 + 0.2 = 0.3, history),
+**Notes** (text editor: undo/redo, open/save, line numbers; Ctrl+E in Files edits a file) and **Settings**
+(lock after idle, time zone, wallpaper, password). Every window can be maximised and resized, the Terminal
+included. Nova keeps its own files in **`/system`** (settings, password, boot log) and yours in `/documents`.
+
+Next stages (real-PC USB input, networking, then the Vexa browser on Nova) are in
+[docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Layout
 
@@ -97,7 +108,9 @@ Next stages are in [docs/ROADMAP.md](docs/ROADMAP.md).
 | `crates/nvme` | NVMe commands, queue bookkeeping, IDENTIFY parsing |
 | `crates/usb` | xHCI rings/TRBs/contexts, USB descriptors, HID boot keyboard + mouse reports |
 | `crates/gfx` | Off-screen canvases, rectangles, the 5x7 font |
-| `crates/desktop` | Window manager + compositor (windows, focus, drag, taskbar, launcher, damage), Files/System views |
+| `crates/desktop` | Window manager + compositor (windows, focus, drag, resize, maximise, taskbar, launcher, damage), lock screen, apps: Files, System, Calculator, Notes, Settings |
+| `crates/auth` | SHA-256, HMAC, PBKDF2 and the stored password record |
+| `crates/safety` | The safety net's timing rules (crash countdown, boot/desktop watchdogs) |
 | `crates/kbd` | Keyboard scancode decoding, US layout, modifiers |
 | `crates/console` | Text grid (scrolling, dirty rows) + line editor |
 | `crates/ps2` | PS/2 mouse packet decoder + pointer tracking |
@@ -139,17 +152,17 @@ the guest CPU starts, even with no guest at all
 so it is a QEMU/Windows build problem, not Nova. WHPX is also much faster (a
 boot takes ~1.3 s). To use TCG on another machine: `$env:NOVA_ACCEL = 'tcg'`.
 
-## Booting a real PC (not tried yet)
+## Booting a real PC (boots on the ASUS; USB input not working yet)
 
 **Read [docs/REAL-HARDWARE.md](docs/REAL-HARDWARE.md) first**: the safe plan (Secure Boot left on via shim +
 MOK, no firmware changes, no disk writes, a `-NoDisks` build, BitLocker recovery key first).
 Linux scripts: `tools/build.sh`, `tools/secureboot/` (make-key, make-stick, qemu-test).
 
 
-The contents of `build\esp` are a complete UEFI boot volume. Copy them to a
-FAT32 USB stick (`EFI\BOOT\BOOTX64.EFI` + `NOVA\KERNEL.ELF`), turn **Secure
-Boot off**, and boot from the stick. Output goes to the screen and to COM1.
-This has only been run in QEMU so far. What a real PC needs that QEMU tests:
+The contents of `build\esp` are a complete UEFI boot volume; with Secure Boot ON (the way we do it) the
+stick also carries shim and a MOK-signed NovaBoot, built by `tools/secureboot/make-stick.sh`. Nova has
+booted to its desktop on the ASUS PC this way; USB keyboard/mouse input there is the open problem. What a
+real PC needs that QEMU tests:
 an NVMe SSD (done), USB keyboard/mouse with no PS/2 port (done, tested in QEMU
 with the PS/2 controller switched off). Not yet: keyboards behind a USB hub
 (many desktop front panels and docks), Wi-Fi/Ethernet, the GPU beyond the

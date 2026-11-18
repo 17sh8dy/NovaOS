@@ -10,7 +10,7 @@ repo). They are in `LOCAL-NOTES.md` next to this folder's `README.md` (git-ignor
 
 ## 2026-11-17 (later): stage 12, apps + window sizing (QEMU only)
 
-* Stage 11 committed as `8168f86` (not pushed). Stage 12: Calculator, Notes, Settings, maximise/resize,
+* Stages 11 (`8168f86`) and 12 (`c8406c7`) are committed and **pushed** to `full-kernel`. Stage 12: Calculator, Notes, Settings, maximise/resize,
   idle auto-lock, `/system` folder. Details: `docs/ROADMAP.md` "Stage 12 notes". The roadmap now has the
   plan for **Vexa on Nova** (needs networking first; Vexa itself is Chromium and can't run here).
 * **USB on the ASUS is still not fixed:** the diagnostic build that shows the `xhci:`/`usb:` lines in the
@@ -26,7 +26,6 @@ repo). They are in `LOCAL-NOTES.md` next to this folder's `README.md` (git-ignor
   stick there could not be unlocked. Fix USB input first, or only use `-Password` with a PS/2 keyboard.
 * Seen once in QEMU: `scheduler self-test FAILED: dead threads' stacks are not being reused` (panic at boot);
   the rerun passed. Pre-existing and intermittent, not investigated yet.
-* Not committed/pushed yet: ask first.
 
 ## Where we left off (2026-11-16, later): FIRST REAL BOOT WORKED
 
@@ -52,23 +51,23 @@ repo). They are in `LOCAL-NOTES.md` next to this folder's `README.md` (git-ignor
   (before signing). With the fix, qemu-test.sh passes all 4 checks (Nova reaches READY with Secure Boot ON).
 * The stick (drive E:) was rewritten with the fixed NovaBoot (only `EFI\BOOT\grubx64.efi` changed; all 5 files
   hash-verified against the Dell-built `build/secureboot-esp`). **Next: the user retries F8 -> stick ->
-  MokManager enrolment on the ASUS PC and reports what each screen shows.** Not yet committed/pushed
-  (`tools/pefix.py`, `build.ps1`, `build.sh`, this file): ask before committing or pushing.
+  MokManager enrolment on the ASUS PC and reports what each screen shows.** (Since committed and pushed.)
 * Note: qemu-test.sh checks 1 and 3 used to pass spuriously (the old error also contained "Verification
   failed"); they now fail with Security Violation, as intended. Dell now has qemu/ovmf/virt-firmware installed.
 * If Windows asked for the BitLocker recovery key after the MOK enrolment, that contradicts the PCR 7
   reasoning in `docs/REAL-HARDWARE.md`: record it there. The recovery screen has no time limit.
 * Update this section after each real-hardware attempt (what happened, what to try next).
 
-## State (2026-11-15)
+## State (2026-11-17)
 
-* Stages 1-10 done (boot, CPU tables, memory, interrupts/SMP, user space, AHCI/NVMe, NovaFS, xHCI USB,
-  desktop + user-space shell `nsh`). Everything is tested in QEMU by `tools\test.ps1` (all green).
+* Stages 1-12 done (boot, CPU tables, memory, interrupts/SMP, user space, AHCI/NVMe, NovaFS, xHCI USB,
+  desktop + user-space shell `nsh`, login password, Calculator/Notes/Settings, window resizing, `/system`).
+  Everything is tested in QEMU by `tools\test.ps1` (about 25 minutes).
 * **Safety net** (`tools\build.ps1 -Safe 30`, `crates/safety`, `kernel/src/safety.rs`): a crash, a boot that
   never prints READY, or a frozen desktop shows the crash screen with a countdown, then resets the PC. A
   PS/2 key press stops the countdown. Off by default. Details in `docs/REAL-HARDWARE.md`.
-* **Never booted on real hardware yet.** A Secure-Boot stick (shim + MOK) has been built and written; the
-  first real boot is the next step. See "First real boot" below.
+* **Real hardware:** Nova boots on the ASUS PC with Secure Boot ON (shim + MOK) and shows the desktop, but
+  USB keyboard and mouse input does not work there yet (see "Where we left off").
 
 ## Build and test (Windows, PowerShell)
 
