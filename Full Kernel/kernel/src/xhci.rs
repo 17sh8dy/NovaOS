@@ -172,6 +172,23 @@ struct Endpoint {
     halted: bool,
     errors: u32,
     seen: bool,
+    /// Diagnostics for the `usb` command: reports received, reports that moved
+    /// the pointer, and the raw bytes of the latest one.
+    reports: u32,
+    moving: u32,
+    last: [u8; 8],
+    last_len: u8,
+}
+
+fn hex(bytes: &[u8]) -> String {
+    let mut s = String::new();
+    for (i, b) in bytes.iter().enumerate() {
+        if i > 0 {
+            s.push(' ');
+        }
+        s.push_str(&alloc::format!("{b:02x}"));
+    }
+    s
 }
 
 struct Device {
@@ -286,6 +303,14 @@ impl Controller {
         let got = asked.saturating_sub(ev.residual()) as usize;
         // SAFETY: `buffer` is inside this endpoint's report page (we queued it).
         let data = unsafe { core::slice::from_raw_parts((direct() + buffer) as *const u8, got.min(REPORT_BYTES as usize)) };
+        ep.reports = ep.reports.wrapping_add(1);
+        let n = data.len().min(8);
+        ep.last = [0; 8];
+        ep.last[..n].copy_from_slice(&data[..n]);
+        ep.last_len = n as u8;
+        if data.iter().skip(1).take(2).any(|&b| b != 0) {
+            ep.moving = ep.moving.wrapping_add(1);
+        }
         match &mut ep.role {
             Role::Keyboard { report, pipeline } => {
                 let mut typed = false;
@@ -507,6 +532,19 @@ impl Controller {
             }
         }
 
+        // What does each mouse interface really send? Log its HID report descriptor (diagnostic).
+        for b in boot.iter().filter(|b| b.kind == BootKind::Mouse) {
+            if self.control(d, 0x81, desc::GET_DESCRIPTOR, 0x2200, b.interface as u16, 128).is_ok() {
+                let data = self.control_data(d, 128).to_vec();
+                let end = data.iter().rposition(|&x| x != 0).map_or(0, |i| i + 1).clamp(1, 96);
+                for (i, chunk) in data[..end].chunks(24).enumerate() {
+                    crate::kprintln!("usb: port {port} mouse desc +{:02x}: {}", i * 24, hex(chunk));
+                }
+            } else {
+                crate::kprintln!("usb: port {port}: mouse interface {}: could not read its report descriptor", b.interface);
+            }
+        }
+
         // One interrupt-IN endpoint per boot interface.
         let b4 = self.below_4g;
         let mut add = 1u32;
@@ -528,7 +566,7 @@ impl Controller {
                 BootKind::Mouse => Role::Mouse,
             };
             let report_len = (b.max_packet as u32).clamp(1, REPORT_BYTES as u32);
-            endpoints.push((Endpoint { dci: ep_dci, ring, buffers, report_len, role, halted: false, errors: 0, seen: false }, b.max_packet, b.interval));
+            endpoints.push((Endpoint { dci: ep_dci, ring, buffers, report_len, role, halted: false, errors: 0, seen: false, reports: 0, moving: 0, last: [0; 8], last_len: 0 }, b.max_packet, b.interval));
         }
         // SAFETY: as above.
         unsafe { core::ptr::write_bytes(iv as *mut u8, 0, 4096) };
@@ -863,6 +901,18 @@ pub fn describe() -> Vec<String> {
         for d in &c.devices {
             let kinds: Vec<&str> = d.endpoints.iter().map(|e| if matches!(e.role, Role::Keyboard { .. }) { "keyboard" } else { "mouse" }).collect();
             out.push(alloc::format!("  port {}: {}, {}, {}", d.port, d.name, d.speed.name(), kinds.join(" + ")));
+            for e in &d.endpoints {
+                let role = if matches!(e.role, Role::Keyboard { .. }) { "kbd" } else { "mouse" };
+                out.push(alloc::format!(
+                    "    ep{} {role}: {} reports ({} with motion), {} errors{}, last: {}",
+                    e.dci,
+                    e.reports,
+                    e.moving,
+                    e.errors,
+                    if e.halted { ", HALTED" } else { "" },
+                    hex(&e.last[..e.last_len as usize])
+                ));
+            }
         }
     }
     out

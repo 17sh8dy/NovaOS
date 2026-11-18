@@ -625,7 +625,12 @@ pub fn self_test(cpus: usize) -> Result<SelfTest, &'static str> {
     if sum.load(Ordering::SeqCst) != 2 * (64 * 65 / 2) {
         return Err("short threads did not all run exactly once");
     }
-    if created_after_wave[1] > created_after_wave[0] + 8 {
+    // A thread is "finished" (what join waits for) a moment before its stack is back in
+    // the pool: that happens when its CPU has switched away. So up to one stack per other
+    // CPU can still be in transit when the second wave starts. Real non-reuse would
+    // create about 64 new stacks.
+    let in_transit = cpus.saturating_sub(1);
+    if created_after_wave[1] > created_after_wave[0] + (8 + in_transit).min(56) {
         return Err("dead threads' stacks are not being reused");
     }
 
