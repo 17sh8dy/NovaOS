@@ -133,10 +133,28 @@ struct Resizing {
     now: Rect,
 }
 
+/// A desktop icon: a shortcut to an app.
+pub struct Icon {
+    pub id: u32,
+    pub label: String,
+    pub selected: bool,
+}
+
+/// A rubber-band selection being dragged over the wallpaper.
+#[derive(Clone, Copy, Debug)]
+struct Marquee {
+    anchor: (i32, i32),
+    now: (i32, i32),
+    /// Moved far enough to count as a drag (not just a click).
+    moved: bool,
+}
+
 /// What is under a point.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hit {
     Desktop,
+    /// A desktop icon (its app's id).
+    Icon(u32),
     Launcher,
     TaskButton(u32),
     Taskbar,
@@ -170,6 +188,10 @@ pub enum Event {
     Click(u32, i32, i32),
     /// The window got a new size (maximised, restored or resized): its app must redraw.
     Resized(u32),
+    /// An icon was double-clicked: open its app.
+    IconOpened(u32),
+    /// The icon selection changed (a click or a finished marquee): the selected icons' ids.
+    Selected(Vec<u32>),
 }
 
 pub struct Desktop {
@@ -197,7 +219,19 @@ pub struct Desktop {
     resizing: Option<Resizing>,
     subtitle: String,
     sky: (Color, Color),
+    icons: Vec<Icon>,
+    marquee: Option<Marquee>,
+    /// Milliseconds, set by the kernel before presses (double-click timing).
+    now_ms: u64,
+    /// The last click: when, where, and on what (see [`Desktop::click_target`]).
+    last_click: Option<(u64, i32, i32, u32)>,
 }
+
+/// Clicks this close in time and space on the same target are a double-click.
+const DOUBLE_CLICK_MS: u64 = 450;
+const DOUBLE_CLICK_PX: i32 = 6;
+/// A press moves this far before a marquee counts as dragged.
+const MARQUEE_SLOP: i32 = 3;
 
 impl Desktop {
     /// A desktop for a `w` x `h` screen; `subtitle` goes under the name on the wallpaper.
@@ -224,6 +258,10 @@ impl Desktop {
             resizing: None,
             subtitle: String::from(subtitle),
             sky: (SKY_TOP, SKY_BOTTOM),
+            icons: Vec::new(),
+            marquee: None,
+            now_ms: 0,
+            last_click: None,
         };
         d.paint_wallpaper();
         d.damage_all();
@@ -398,6 +436,92 @@ impl Desktop {
     fn shadow(&self, r: Rect) -> Rect {
         let o = 6 * self.m.u;
         Rect::new(r.x + o, r.y + o, r.w, r.h)
+    }
+
+    // ---- Desktop icons and the marquee ----
+
+    /// Sets the icons (id, label), laid out top to bottom down the left side.
+    pub fn set_icons(&mut self, icons: Vec<(u32, String)>) {
+        self.icons = icons.into_iter().map(|(id, label)| Icon { id, label, selected: false }).collect();
+        let work = self.work_area();
+        self.add_damage(Rect::new(0, 0, self.icon_cell().0 * 3, work.h));
+    }
+
+    pub fn icons(&self) -> &[Icon] {
+        &self.icons
+    }
+
+    /// Width and height of one icon cell.
+    fn icon_cell(&self) -> (i32, i32) {
+        (140 * self.m.u, 72 * self.m.u)
+    }
+
+    /// Where icon number `i` is (the whole cell: badge and label).
+    pub fn icon_rect(&self, i: usize) -> Rect {
+        let u = self.m.u;
+        let (cw, ch) = self.icon_cell();
+        let rows = (((self.work_area().h - 12 * u) / ch).max(1)) as usize;
+        Rect::new(12 * u + (i / rows) as i32 * cw, 12 * u + (i % rows) as i32 * ch, cw - 8 * u, ch - 4 * u)
+    }
+
+    /// The ids of the selected icons, in order.
+    pub fn selected_icons(&self) -> Vec<u32> {
+        self.icons.iter().filter(|i| i.selected).map(|i| i.id).collect()
+    }
+
+    /// The kernel's clock in milliseconds (for double-clicks).
+    pub fn set_time(&mut self, ms: u64) {
+        self.now_ms = ms;
+    }
+
+    /// The rubber band being dragged, in screen coordinates.
+    pub fn marquee_rect(&self) -> Option<Rect> {
+        self.marquee.map(|m| Self::band(m.anchor, m.now))
+    }
+
+    fn band(a: (i32, i32), b: (i32, i32)) -> Rect {
+        Rect::new(a.0.min(b.0), a.1.min(b.1), (a.0 - b.0).abs() + 1, (a.1 - b.1).abs() + 1)
+    }
+
+    fn damage_icon(&mut self, i: usize) {
+        let r = self.icon_rect(i);
+        self.add_damage(r);
+    }
+
+    /// Selects exactly the icons for which `want` is true; returns whether anything changed.
+    fn select_icons(&mut self, want: impl Fn(u32, &Rect) -> bool) -> bool {
+        let mut changed = false;
+        for i in 0..self.icons.len() {
+            let on = want(self.icons[i].id, &self.icon_rect(i));
+            if self.icons[i].selected != on {
+                self.icons[i].selected = on;
+                self.damage_icon(i);
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Is this press the second half of a double-click on the same target?
+    fn is_double_click(&mut self, x: i32, y: i32, target: u32) -> bool {
+        let double = self
+            .last_click
+            .is_some_and(|(t, lx, ly, tg)| tg == target && self.now_ms.saturating_sub(t) <= DOUBLE_CLICK_MS && (x - lx).abs() <= DOUBLE_CLICK_PX && (y - ly).abs() <= DOUBLE_CLICK_PX);
+        // A double-click is used up: a third click starts over.
+        self.last_click = if double { None } else { Some((self.now_ms, x, y, target)) };
+        double
+    }
+
+    fn marquee_to(&mut self, x: i32, y: i32) {
+        let Some(m) = self.marquee else { return };
+        let old = Self::band(m.anchor, m.now);
+        let moved = m.moved || (x - m.anchor.0).abs() > MARQUEE_SLOP || (y - m.anchor.1).abs() > MARQUEE_SLOP;
+        let band = Self::band(m.anchor, (x, y));
+        self.marquee = Some(Marquee { now: (x, y), moved, ..m });
+        if m.moved || moved {
+            self.add_damage(old.union(&band));
+            self.select_icons(|_, r| r.intersects(&band));
+        }
     }
 
     // ---- Windows ----
@@ -710,6 +834,9 @@ impl Desktop {
             }
             return Hit::Frame(w.id);
         }
+        if let Some(i) = (0..self.icons.len()).find(|&i| self.icon_rect(i).contains(x, y)) {
+            return Hit::Icon(self.icons[i].id);
+        }
         Hit::Desktop
     }
 
@@ -741,7 +868,8 @@ impl Desktop {
                 self.resizing = Some(Resizing { now: r, ..rs });
             }
         }
-        let hover = if self.drag.is_some() || self.resizing.is_some() { Hit::Desktop } else { self.hit(x, y) };
+        self.marquee_to(x, y);
+        let hover = if self.drag.is_some() || self.resizing.is_some() || self.marquee.is_some() { Hit::Desktop } else { self.hit(x, y) };
         self.set_hover(hover);
     }
 
@@ -753,6 +881,7 @@ impl Desktop {
             Hit::MenuItem(i) => Some(self.menu_item(i)),
             Hit::Close(id) => self.find(id).map(|w| self.close_rect(w)),
             Hit::Maximize(id) => self.find(id).and_then(|w| self.maximize_rect(w)),
+            Hit::Icon(id) => self.icons.iter().position(|i| i.id == id).map(|i| self.icon_rect(i)),
             Hit::Minimize(id) => self.find(id).map(|w| self.minimize_rect(w)),
             _ => None,
         }
@@ -837,23 +966,47 @@ impl Desktop {
             }
             Hit::Title(id) => {
                 focus(self, id, &mut ev);
-                let r = self.find(id).map(|w| w.rect).unwrap_or_default();
-                self.drag = Some((id, x - r.x, y - r.y));
-                self.drag_from = (r.x, r.y);
-                ev.push(Event::DragStarted(id));
+                if self.is_double_click(x, y, id | 0x2000_0000) && self.toggle_maximize(id) {
+                    ev.push(Event::Resized(id));
+                } else {
+                    let r = self.find(id).map(|w| w.rect).unwrap_or_default();
+                    self.drag = Some((id, x - r.x, y - r.y));
+                    self.drag_from = (r.x, r.y);
+                    ev.push(Event::DragStarted(id));
+                }
+            }
+            Hit::Icon(id) => {
+                let changed = self.select_icons(|ic, _| ic == id);
+                if self.is_double_click(x, y, id | 0x1000_0000) {
+                    ev.push(Event::IconOpened(id));
+                } else if changed {
+                    ev.push(Event::Selected(self.selected_icons()));
+                }
+            }
+            Hit::Desktop => {
+                self.last_click = None;
+                self.marquee = Some(Marquee { anchor: (x, y), now: (x, y), moved: false });
+                if self.select_icons(|_, _| false) {
+                    ev.push(Event::Selected(Vec::new()));
+                }
             }
             Hit::Frame(id) => focus(self, id, &mut ev),
             Hit::Content(id, cx, cy) => {
                 focus(self, id, &mut ev);
                 ev.push(Event::Click(id, cx, cy));
             }
-            Hit::Desktop | Hit::Taskbar => {}
+            Hit::Taskbar => {}
         }
         ev
     }
 
     /// The left button came up.
     pub fn release(&mut self) -> Vec<Event> {
+        if let Some(m) = self.marquee.take() {
+            self.add_damage(Self::band(m.anchor, m.now));
+            // Only a real drag reports what it selected (a plain click on the wallpaper already did).
+            return if m.moved { alloc::vec![Event::Selected(self.selected_icons())] } else { Vec::new() };
+        }
         if let Some(rs) = self.resizing.take() {
             self.add_damage(rs.now);
             if rs.now == rs.from {
@@ -1017,6 +1170,13 @@ impl Desktop {
             }
             return;
         }
+        self.draw_icons(back, area);
+        if let Some(r) = self.marquee_rect().filter(|_| self.marquee.is_some_and(|m| m.moved)) {
+            Self::tint(back, r, area, ACCENT, 34);
+            for i in 0..self.m.u {
+                back.outline(r.inset(i), ACCENT, area);
+            }
+        }
         for w in self.windows.iter().filter(|w| w.state == State::Open) {
             if w.rect.union(&self.shadow(w.rect)).intersects(&area) {
                 self.draw_window(back, w, area);
@@ -1047,6 +1207,51 @@ impl Desktop {
                     back.put(x, y, mix(p, 0, amount));
                 }
             }
+        }
+    }
+
+    /// Blends `color` over `r` by `amount`/255.
+    fn tint(back: &mut Canvas, r: Rect, clip: Rect, color: Color, amount: u32) {
+        let r = r.intersect(&clip);
+        for y in r.y..r.bottom() {
+            for x in r.x..r.right() {
+                if let Some(p) = back.get(x, y) {
+                    back.put(x, y, mix(p, color, amount));
+                }
+            }
+        }
+    }
+
+    fn draw_icons(&self, back: &mut Canvas, clip: Rect) {
+        const BADGES: [Color; 6] = [rgb(0x2B, 0x7A, 0x78), rgb(0x3A, 0x5F, 0xB0), rgb(0x8A, 0x5A, 0xC8), rgb(0xC0, 0x6A, 0x3A), rgb(0x4A, 0x8F, 0x4A), rgb(0x9A, 0x4A, 0x6A)];
+        let (u, ts) = (self.m.u, self.m.text);
+        for (i, icon) in self.icons.iter().enumerate() {
+            let cell = self.icon_rect(i);
+            if !cell.intersects(&clip) {
+                continue;
+            }
+            let hover = self.hover == Hit::Icon(icon.id);
+            if icon.selected {
+                Self::tint(back, cell, clip, ACCENT, 46);
+                back.outline(cell, mix(ACCENT, INK, 60), clip);
+            } else if hover {
+                Self::tint(back, cell, clip, INK, 22);
+            }
+            // The badge: a coloured square with the app's initial.
+            let side = 40 * u;
+            let badge = Rect::new(cell.x + (cell.w - side) / 2, cell.y + 5 * u, side, side);
+            let color = BADGES[icon.id as usize % BADGES.len()];
+            back.fill_clipped(badge, mix(color, 0, 90), clip);
+            back.fill_clipped(badge.inset(2 * u), color, clip);
+            let initial: String = icon.label.chars().take(1).collect();
+            let big = 4 * u;
+            back.text(badge.x + (badge.w - text_width(&initial, big)) / 2, badge.y + (badge.h - text_height(big)) / 2 + u, big, INK, &initial, clip.intersect(&badge));
+            // The label, with a dark edge so it reads on any wallpaper.
+            let label = nova_gfx::fit(&icon.label, ts, cell.w - 6 * u);
+            let lx = cell.x + (cell.w - text_width(&label, ts)) / 2;
+            let ly = badge.bottom() + 6 * u;
+            back.text(lx + u, ly + u, ts, rgb(0, 0, 0), &label, clip.intersect(&cell));
+            back.text(lx, ly, ts, INK, &label, clip.intersect(&cell));
         }
     }
 

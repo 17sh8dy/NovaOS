@@ -1,0 +1,6 @@
+[package]
+name = "nova-net"
+description = "Nova's network stack as pure logic: Ethernet, ARP, IPv4, ICMP, UDP, DHCP and DNS clients."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true

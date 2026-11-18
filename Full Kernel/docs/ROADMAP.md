@@ -18,10 +18,46 @@ Each stage ends with something that boots and is checked by `tools\test.ps1`.
 | 11 | Login + desktop polish ✅ | Password lock screen (at boot, Lock, Ctrl+Alt+L, `lock`/`passwd`), salted PBKDF2 records, hover highlights, Alt+Tab, Restart |
 | 12 | Apps + window sizing ✅ | Calculator, Notes, Settings (from scratch); maximise/restore and resize for every window (the Terminal's grid follows); idle auto-lock; the `/system` folder |
 | 13 | Real-hardware USB input ✅ | Keyboard and mouse work on the ASUS PC (the mouse needed its HID report descriptor read: `crates/usb/src/report.rs`) |
-| 14 | Networking | NIC driver (virtio-net in QEMU, then the PC's Realtek RTL8111), Ethernet/ARP/IPv4/UDP/TCP, DHCP, DNS, an HTTP client; tested in QEMU first |
+| 14 | Networking (started) | **Done:** virtio-net driver (QEMU), Ethernet/ARP/IPv4/ICMP/UDP, DHCP client, DNS client, `ip`/`ping`/`dns`/`dhcp`. **Next:** the PC's Realtek RTL8111 driver, TCP, an HTTP client |
+| 14b | Desktop icons + marquee ✅ | App icons on the wallpaper, rubber-band selection, double-click to open an icon or to maximise a window |
 | 15 | **Integrating Vexa** | See "Vexa on Nova" below |
 
 Later: USB hubs and storage, networking, GPU, real-hardware testing on a USB stick.
+
+## Stage 14 notes: networking (first part)
+
+* **`crates/net`** (21 host tests): `wire.rs` (Ethernet, ARP, IPv4, ICMP echo, UDP, the Internet checksum, every parser
+  bounds-checked, fragments dropped), `dhcp.rs`, `dns.rs` (compression pointers are skipped, never followed, so a hostile
+  answer cannot loop), and `stack.rs`: a pure state machine, frames in / frames out / a clock in milliseconds. It does
+  DHCP (discover, offer, request, ack, retransmits 2/4/6/8/10 s, renews at 75% of the lease), ARP (answers, learns,
+  queues packets until the next hop is known, 3 tries), ping (sends and answers), and DNS A lookups (3 tries).
+  Two stacks are wired together in tests, so ARP + ping are exercised end to end.
+* **`kernel/src/virtio_net.rs`:** virtio 1.0 over PCI ("modern": registers found through the vendor capabilities), two
+  split virtqueues of 16 buffers, no offloads, polled. **`kernel/src/net.rs`:** finds a card, runs the stack on the `net`
+  thread (every 10 ms), and implements the shell commands `ip` (also `ifconfig`, `net`), `dhcp`, `dns NAME`, `ping HOST`.
+  The System window shows the address. A card without a driver is named in the boot log (a real PC's Realtek or Intel
+  card needs its own driver: that is the next step, and the `Nic` alias in `net.rs` is where it plugs in).
+* **Run it:** `.\tools\run.ps1 -Net` (QEMU's user-mode network: DHCP gives 10.0.2.15, gateway 10.0.2.2, DNS 10.0.2.3).
+  In the Terminal: `ip`, `ping 10.0.2.2`, `dns example.com`, `ping example.com`.
+* **Tests:** `boot_test.py --net`: the card comes up with its MAC, DHCP gives 10.0.2.15/24 with router and DNS, `ip`,
+  four pings to the gateway, a DNS lookup (a clean answer either way), an address that resolves to itself, an unowned
+  address reported unreachable after ARP gives up, `dhcp` asked again. Informational: `dns example.com` through the
+  host's resolver (it resolved in the first run).
+* Gaps: no TCP (so no HTTP/HTTPS yet), no IPv6, no fragment reassembly, no interrupts (10 ms polling), one card, no
+  loopback, the Realtek RTL8111 on the ASUS has no driver. Planned: TCP, then an HTTP client, then Vexa on Nova.
+
+## Desktop icons and marquee selection
+
+* The desktop has **icons** for Terminal, Files, Notes, Calculator, Settings and System down the left side. Click one to
+  select it; click the wallpaper to clear; **drag a rubber band** over the wallpaper to select every icon it touches
+  (in any direction; the selection follows the band live); **double-click** an icon to open its app. A double-click on a
+  window's **title bar** maximises or restores it (resizable windows).
+* `crates/desktop/src/lib.rs`: `set_icons`, `Hit::Icon`, a `Marquee` that starts only on bare wallpaper (never over a
+  window, never while locked) and counts as a drag after 3 px, `Event::IconOpened` / `Event::Selected`, double-click
+  timing from the kernel's clock (450 ms, 6 px). Damage stays small: moving the band repaints only its neighbourhood
+  (tested), and composing in pieces equals composing all at once (tested). 8 new tests.
+* Gaps: no dragging icons to rearrange them, no Ctrl/Shift to add to a selection, no keyboard selection, selection does
+  nothing yet except open on double-click.
 
 ## Vexa on Nova (the plan)
 

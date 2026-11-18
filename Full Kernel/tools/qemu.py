@@ -84,7 +84,7 @@ def default_cpus() -> int:
     return int(os.environ.get("NOVA_CPUS", "4"))
 
 
-def base_args(qemu: Path, memory: str = "256M", cpus: int | None = None, usb: bool | None = None, nvme_block: int = 512, ps2: bool = True) -> list[str]:
+def base_args(qemu: Path, memory: str = "256M", cpus: int | None = None, usb: bool | None = None, nvme_block: int = 512, ps2: bool = True, net: bool = False) -> list[str]:
     """QEMU arguments. Paths are relative to BUILD, which must be the cwd
     (QEMU's -drive syntax can't take a path with ',' and the vvfat driver is
     simplest with a relative directory)."""
@@ -111,9 +111,14 @@ def base_args(qemu: Path, memory: str = "256M", cpus: int | None = None, usb: bo
         "-device", f"nvme,serial=NOVA0001,drive=nvme0,logical_block_size={nvme_block},physical_block_size={nvme_block}",
         # A USB 3 (xHCI) controller, always there; keyboard + mouse on request.
         "-device", "qemu-xhci,id=xhci",
-        "-nic", "none",
         "-no-reboot",
     ]
+    if net:
+        # QEMU's user-mode network: DHCP server and gateway 10.0.2.2, DNS 10.0.2.3; the guest is 10.0.2.15.
+        # The virtio-net card is modern-only (virtio 1.0), which is what the kernel's driver speaks.
+        args += ["-netdev", "user,id=net0", "-device", "virtio-net-pci,netdev=net0,disable-legacy=on,mac=52:54:00:12:34:56"]
+    else:
+        args += ["-nic", "none"]
     if usb:
         # With these attached, QEMU sends its keyboard/mouse input to the USB
         # devices instead of PS/2.

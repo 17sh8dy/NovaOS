@@ -8,6 +8,15 @@ detail; this page is the orientation + current state.
 Machine-specific details (the signing machine's address, drive letters, which PC) are NOT in git (public
 repo). They are in `LOCAL-NOTES.md` next to this folder's `README.md` (git-ignored). Read it too.
 
+## 2026-11-18 (later): networking started + desktop icons/marquee (QEMU only)
+
+* **Networking:** `crates/net` (pure stack: ARP, IPv4, ICMP, UDP, DHCP, DNS), virtio-net driver, shell commands
+  `ip`, `ping`, `dns`, `dhcp`. Works in QEMU (`tools\run.ps1 -Net`, `boot_test.py --net`). **The ASUS has a Realtek
+  card: no driver yet**, so `ip` there says no usable network card. Next: the Realtek driver, then TCP, HTTP, Vexa.
+* **Desktop icons + marquee selection + double-click** (see `docs/ROADMAP.md`, "Desktop icons and marquee selection").
+  The Terminal now opens right of the icon column (x = 160u).
+* Committed and pushed (full-kernel).
+
 ## 2026-11-18: USB mouse fix: CONFIRMED WORKING ON THE ASUS
 
 * Photo of the diagnostic stick: both xHCI controllers start, the keyboard (Apex) works, the Razer Viper V3 Pro

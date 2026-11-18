@@ -208,6 +208,8 @@ format DISK erase   create a NovaFS on a disk (DESTROYS the disk)
 install         copy the built-in programs to /bin on the disk
 fscheck         check the disk's file system; sync: write everything out
 usb             USB keyboards and mice attached
+ip              the network card and address (ifconfig, net); dhcp asks again
+ping HOST       echo requests to a name or address; dns NAME looks a name up
 version         kernel version
 panic           deliberately crash the kernel (shows the panic screen)
 lock            lock the screen (asks for a password first if none is set)
@@ -451,6 +453,9 @@ pub fn execute(line: &str) {
         },
         "version" => outln(&alloc::format!("Nova kernel {} (x86_64, {} CPUs)", env!("CARGO_PKG_VERSION"), cpu::online_count())),
         "panic" => panic!("the 'panic' shell command was run"),
+        "ip" | "net" | "ifconfig" | "dhcp" | "dns" | "nslookup" | "ping" => {
+            crate::net::command(cmd, rest, &mut |t, err| if err { errln(t) } else { outln(t) });
+        }
         "usb" => {
             let lines = crate::xhci::describe();
             if lines.is_empty() {

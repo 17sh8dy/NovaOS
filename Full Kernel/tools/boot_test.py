@@ -606,6 +606,47 @@ def login_test(qmp, serial, password) -> str | None:
     return None
 
 
+def net_test(qmp, serial) -> str | None:
+    """Networking through QEMU's user-mode network and a virtio-net card: DHCP gives
+    10.0.2.15, the shell's `ip`, `ping` (the gateway answers four times), `dns`
+    (any clean answer: the host may be offline) and `dhcp` (asking again)."""
+
+    def wait_for(pattern, seconds=20):
+        end = time.time() + seconds
+        while time.time() < end:
+            m = re.search(pattern, read_log(serial))
+            if m:
+                return m
+            time.sleep(0.1)
+        return None
+
+    if not wait_for(r"net: virtio-net \S+ up, MAC 52:54:00:12:34:56"):
+        return "the virtio-net card was not found/initialised"
+    if not wait_for(r"net: DHCP lease: 10\.0\.2\.15/24 router 10\.0\.2\.2 dns 10\.0\.2\.3", 30):
+        return "DHCP did not give 10.0.2.15"
+    if not wait_for(r"shell: ready"):
+        return "the shell never started"
+    steps = [
+        ("ip\n", r"con: address 10\.0\.2\.15/24 router 10\.0\.2\.2 dns 10\.0\.2\.3", 10, "ip does not show the lease"),
+        ("ping 10.0.2.2\n", r"con: 4 of 4 replies", 30, "the gateway did not answer four pings"),
+        ("dns localhost\n", r"con: (localhost is \d+\.\d+\.\d+\.\d+|cannot resolve localhost: [^\n]+)", 30, "dns did not finish with an answer or a clean error"),
+        ("dns 1.2.3.4\n", r"con: 1\.2\.3\.4 is 1\.2\.3\.4", 10, "a dotted address should resolve to itself"),
+        ("ping 10.0.2.99\n", r"con: 10\.0\.2\.99: host unreachable", 30, "an address nobody owns should say unreachable"),
+        ("dhcp\n", r"con: got 10\.0\.2\.15/24", 40, "asking DHCP again did not give the address back"),
+    ]
+    for keys, expect, seconds, why in steps:
+        type_text(qmp, keys)
+        if not wait_for(expect, seconds):
+            return f"after {keys.strip()!r}: {why}"
+    for line in re.findall(r"con: reply from [^\n]+", read_log(serial))[:1]:
+        print("Net:", line[5:])
+    # Informational: a real name through the host's resolver (fails cleanly when the host is offline).
+    type_text(qmp, "dns example.com\n")
+    m = wait_for(r"con: (example\.com is \d+\.\d+\.\d+\.\d+|cannot resolve example\.com: [^\n]+)", 20)
+    print("Net: dns example.com ->", m.group(1) if m else "(no answer)")
+    return None
+
+
 def apps_test(qmp, serial) -> str | None:
     """Stage 12 through QEMU's mouse and keyboard: Calculator (mouse and keys),
     Notes (type, save, new, open), maximise/restore and corner-resize,
@@ -685,7 +726,7 @@ def apps_test(qmp, serial) -> str | None:
         if not m:
             return None
         v = [int(g) for g in m]
-        return {"at": (v[0], v[1]), "size": (v[2], v[3]), "title": (v[4], v[5]), "task": (v[10], v[11]), "max": (v[12], v[13])}
+        return {"at": (v[0], v[1]), "size": (v[2], v[3]), "title": (v[4], v[5]), "close": (v[6], v[7]), "task": (v[10], v[11]), "max": (v[12], v[13])}
 
     def launch(name):
         before = count(r"desktop: menu opened")
@@ -716,6 +757,59 @@ def apps_test(qmp, serial) -> str | None:
         if not wait_for(r"system: /system ready"):
             return "the /system folder was not set up"
         term = geometry("Terminal", "open")
+
+        # ---- Desktop icons: a rubber band over the first two, then a double-click opens one.
+        m = wait_for(r"desktop: icons: (.*)")
+        if not m:
+            return "the desktop did not log its icons"
+        icons = {}
+        for name, x, y, w, h in re.findall(r"(\w+) at \((\d+), (\d+)\) size (\d+)x(\d+)", m.group(1)):
+            icons[name] = (int(x), int(y), int(w), int(h))
+        if len(icons) < 3 or "Terminal" not in icons or "Files" not in icons or "Notes" not in icons:
+            return f"unexpected icons: {icons}"
+        tx, ty, tw, th = icons["Terminal"]
+        fx, fy, fw, fh = icons["Files"]
+        sel_before = count(r"desktop: selected Terminal, Files\n")
+        move_to(tx - tw // 2 - 4, ty - th // 2 - 4)       # empty wallpaper above-left of the first icon
+        button(True)
+        move_to(fx + 10, fy + 10)                         # drag down over the second icon
+        button(False)
+        if wait_new(r"desktop: selected Terminal, Files\n", sel_before, 5) is None:
+            return "the rubber band did not select the Terminal and Files icons"
+        screenshot(qmp, "apps_marquee")
+        # Clicking the wallpaper clears it.
+        click(900, 600)
+        if not wait_for(r"desktop: selected nothing"):
+            return "clicking the wallpaper did not clear the selection"
+        # Double-click the Notes icon: it opens.
+        nx, ny, nw, nh = icons["Notes"]
+        move_to(nx, ny)
+        for _ in range(2):
+            button(True)
+            button(False)
+        if not wait_for(r"desktop: icon Notes opened"):
+            return "double-clicking the Notes icon did not open it"
+        notes0 = geometry("Notes", "opened")
+        if notes0 is None:
+            return "Notes did not open from its icon"
+        # Double-click Notes' title bar: maximised.
+        before = count(r"wm: Notes resized: content \d+x\d+ \(maximized\)")
+        move_to(*notes0["title"])
+        for _ in range(2):
+            button(True)
+            button(False)
+        if not wait_new(r"wm: Notes resized: content \d+x\d+ \(maximized\)", before):
+            return "double-clicking the title bar did not maximise Notes"
+        before = count(r"wm: Notes resized: content \d+x\d+\n")
+        m = re.search(r"desktop: (\d+)x(\d+),", log())
+        move_to(int(m.group(1)) // 2, notes0["title"][1] - notes0["at"][1])
+        for _ in range(2):
+            button(True)
+            button(False)
+        if not wait_new(r"wm: Notes resized: content \d+x\d+\n", before):
+            return "double-clicking the maximised title bar did not restore Notes"
+        # Close it again so the rest of the test starts clean.
+        click(*notes0["close"])
 
         # ---- Calculator: mouse, then keyboard.
         launch("Calculator")
@@ -763,7 +857,7 @@ def apps_test(qmp, serial) -> str | None:
         screenshot(qmp, "apps_notes")
 
         # Maximise and restore Notes.
-        before = count(r"wm: Notes resized")
+        before = count(r"wm: Notes resized: content \d+x\d+ \(maximized\)")
         click(*notes["max"])
         if not wait_new(r"wm: Notes resized: content \d+x\d+ \(maximized\)", before):
             return "the maximise button did not maximise Notes"
@@ -1118,6 +1212,7 @@ def main() -> int:
     ap.add_argument("--then-key", action="store_true", help="after the --expect text appears, press a key and require 'restart stopped' in the log and QEMU still running")
     ap.add_argument("--nsh", action="store_true", help="the user-space shell: pipelines, cd, background jobs, Ctrl+C, exit")
     ap.add_argument("--login", metavar="PASSWORD", help="the kernel was built with this test password: lock screen, wrong/right password, lock, Ctrl+Alt+L, passwd")
+    ap.add_argument("--net", action="store_true", help="attach a virtio network card (user-mode network) and test DHCP, ping and DNS from the shell")
     ap.add_argument("--apps", action="store_true", help="Calculator, Notes, Settings, maximise/resize, the /system folder")
     ap.add_argument("--desktop", action="store_true", help="use the desktop: launcher, Files, dragging, focus, System, taskbar")
     ap.add_argument("--usb", action="store_true", help="attach a USB keyboard + mouse (QEMU input goes to them) and test USB")
@@ -1133,7 +1228,7 @@ def main() -> int:
     serial = q.BUILD / "serial.log"
     serial.unlink(missing_ok=True)
     port = free_port()
-    args = q.base_args(qemu, opts.memory, opts.cpus, usb=opts.usb, nvme_block=opts.nvme_block, ps2=not opts.no_ps2) + [
+    args = q.base_args(qemu, opts.memory, opts.cpus, usb=opts.usb, nvme_block=opts.nvme_block, ps2=not opts.no_ps2, net=opts.net) + [
         "-display", "none",
         "-serial", "file:serial.log",
         "-qmp", f"tcp:127.0.0.1:{port},server=on,wait=off",
@@ -1248,6 +1343,14 @@ def main() -> int:
                 reason = "login test: " + problem
             else:
                 print("Login: started locked, keys never reached the shell, wrong passwords refused, unlock, lock, Ctrl+Alt+L and passwd all worked")
+
+        if ok and opts.net and not opts.expect:
+            problem = net_test(qmp, serial)
+            if problem:
+                ok = False
+                reason = "net test: " + problem
+            else:
+                print("Net: virtio-net up, DHCP lease 10.0.2.15, ip/ping/dns/dhcp commands all worked")
 
         if ok and opts.apps and not opts.expect:
             problem = apps_test(qmp, serial)

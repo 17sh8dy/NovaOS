@@ -216,11 +216,20 @@ pub fn init(screen: Screen, info: &BootInfo, free_mib: u64, cpus: usize) {
     let pad = 6 * u;
     let cols = ((w as i32 * 64 / 100) / cw).max(40) as usize;
     let rows = ((work.h * 68 / 100) / ch).max(12) as usize;
-    let (tx, ty) = (32 * u, 28 * u);
+    // Right of the desktop icons.
+    let (tx, ty) = (160 * u, 28 * u);
     desk.add_window(TERMINAL, "Terminal", (cols * cw as usize + 2 * pad as usize, rows * ch as usize + 2 * pad as usize), (tx, ty), PANEL);
     for id in [TERMINAL, FILES, SYSTEM, NOTES, CALC, SETTINGS] {
         desk.set_resizable(id, true);
     }
+    desk.set_icons(alloc::vec![
+        (TERMINAL, String::from("Terminal")),
+        (FILES, String::from("Files")),
+        (NOTES, String::from("Notes")),
+        (CALC, String::from("Calculator")),
+        (SETTINGS, String::from("Settings")),
+        (SYSTEM, String::from("System")),
+    ]);
     desk.set_menu(alloc::vec![
         (String::from("Terminal"), TERMINAL),
         (String::from("Files"), FILES),
@@ -329,6 +338,8 @@ pub fn console_write(text: &str, color: u8) {
 /// what the desktop did.
 pub fn mouse(ev: MouseEvent) -> Option<(Change, i32, i32, Vec<Event>)> {
     with(|g| {
+        // Double-click timing.
+        g.desk.set_time(crate::interrupts::ticks() * 1000 / crate::interrupts::TICK_HZ as u64);
         let change = g.pointer.apply(ev);
         let (x, y) = (g.pointer.x, g.pointer.y);
         let mut events = Vec::new();

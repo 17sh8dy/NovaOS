@@ -466,3 +466,202 @@ fn a_resized_window_composes_the_same_in_pieces() {
     }
     assert_eq!(whole.pixels(), pieces.pixels());
 }
+
+// ---- Desktop icons, marquee selection, double-click ----
+
+/// `desk()` plus three icons, with the two windows moved out of the icon column.
+fn icon_desk() -> Desktop {
+    let mut d = desk();
+    d.move_window(1, 300, 100);
+    d.move_window(2, 400, 200);
+    d.set_icons(vec![(10, String::from("Terminal")), (11, String::from("Files")), (12, String::from("Notes"))]);
+    d.take_damage();
+    d
+}
+
+fn press_at(d: &mut Desktop, x: i32, y: i32) -> Vec<Event> {
+    d.pointer_moved(x, y);
+    d.press()
+}
+
+#[test]
+fn icons_lay_out_down_the_left_and_wrap_into_columns() {
+    let d = icon_desk();
+    let r: Vec<Rect> = (0..3).map(|i| d.icon_rect(i)).collect();
+    assert_eq!((r[0].x, r[1].x, r[2].x), (r[0].x, r[0].x, r[0].x), "one column");
+    assert!(r[0].y < r[1].y && r[1].y < r[2].y);
+    assert!(r.iter().all(|c| !c.is_empty() && d.work_area().intersect(c) == *c));
+    // A short screen pushes later icons into the next column.
+    let mut small = Desktop::new(800, 200, "t");
+    small.set_icons((0..5).map(|i| (i, String::from("x"))).collect());
+    assert!(small.icon_rect(4).x > small.icon_rect(0).x);
+    assert_eq!(small.icon_rect(0).y, small.icon_rect(4).y.min(small.icon_rect(0).y));
+    // Hit testing finds them (and windows still win where they overlap).
+    let (cx, cy) = center(r[1]);
+    assert_eq!(d.hit(cx, cy), Hit::Icon(11));
+    assert_eq!(d.hit(700, 20), Hit::Desktop);
+}
+
+#[test]
+fn clicking_an_icon_selects_only_it_and_the_wallpaper_clears() {
+    let mut d = icon_desk();
+    let (x0, y0) = center(d.icon_rect(0));
+    let (x1, y1) = center(d.icon_rect(1));
+    assert_eq!(press_at(&mut d, x0, y0), vec![Event::Selected(vec![10])]);
+    d.release();
+    assert_eq!(press_at(&mut d, x1, y1), vec![Event::Selected(vec![11])]);
+    d.release();
+    assert_eq!(d.selected_icons(), vec![11]);
+    // Clicking the same one again changes nothing worth reporting.
+    d.set_time(5000);
+    assert!(press_at(&mut d, x1, y1).is_empty());
+    d.release();
+    // The empty wallpaper clears the selection.
+    assert_eq!(press_at(&mut d, 700, 20), vec![Event::Selected(Vec::new())]);
+    d.release();
+    assert!(d.selected_icons().is_empty());
+}
+
+#[test]
+fn dragging_a_rubber_band_selects_what_it_touches_in_any_direction() {
+    let mut d = icon_desk();
+    let (r0, r1, r2) = (d.icon_rect(0), d.icon_rect(1), d.icon_rect(2));
+    // Down-right across the first two icons only.
+    press_at(&mut d, r0.x - 2, r0.y - 2);
+    assert!(d.marquee_rect().is_some());
+    d.pointer_moved(r1.x + 10, r1.y + 10);
+    assert_eq!(d.selected_icons(), vec![10, 11], "selected while dragging");
+    assert_eq!(d.release(), vec![Event::Selected(vec![10, 11])]);
+    assert!(d.marquee_rect().is_none());
+    // Up-left from below the last icon back over the last two: the band is normalised.
+    press_at(&mut d, r2.right() + 4, r2.bottom() + 4);
+    d.pointer_moved(r1.x + 20, r1.y + 20);
+    assert_eq!(d.selected_icons(), vec![11, 12]);
+    // Shrinking the band deselects again.
+    d.pointer_moved(r1.x + 20, r2.bottom() - 2);
+    assert_eq!(d.selected_icons(), vec![12]);
+    d.release();
+    // A band over nothing selects nothing.
+    press_at(&mut d, 600, 400);
+    d.pointer_moved(650, 450);
+    assert!(d.selected_icons().is_empty());
+    assert_eq!(d.release(), vec![Event::Selected(Vec::new())]);
+}
+
+#[test]
+fn a_plain_click_on_the_wallpaper_is_not_a_drag_and_windows_block_the_band() {
+    let mut d = icon_desk();
+    // Two pixels of jitter stays a click: nothing is drawn or selected.
+    press_at(&mut d, 600, 400);
+    d.pointer_moved(602, 401);
+    let mut shot = Canvas::new(W, H, 0);
+    d.compose(&mut shot, d.screen());
+    assert!(d.release().is_empty());
+    // Pressing inside a window starts no band.
+    let c = d.content_rect(1).unwrap();
+    press_at(&mut d, c.x + 10, c.y + 10);
+    assert!(d.marquee_rect().is_none());
+    d.release();
+    // While locked, the wallpaper is dead.
+    d.show_lock(crate::lock::Mode::Unlock);
+    press_at(&mut d, 600, 400);
+    assert!(d.marquee_rect().is_none());
+}
+
+#[test]
+fn double_click_opens_an_icon_but_only_when_quick_close_and_on_the_same_one() {
+    let mut d = icon_desk();
+    let (x0, y0) = center(d.icon_rect(0));
+    let (x1, y1) = center(d.icon_rect(1));
+    d.set_time(1000);
+    press_at(&mut d, x0, y0);
+    d.release();
+    d.set_time(1300);
+    assert_eq!(press_at(&mut d, x0 + 2, y0), vec![Event::IconOpened(10)]);
+    d.release();
+    // A third click starts over rather than counting as another double.
+    d.set_time(1400);
+    assert!(!press_at(&mut d, x0, y0).contains(&Event::IconOpened(10)));
+    d.release();
+    // Too slow.
+    d.set_time(1400 + 2000);
+    press_at(&mut d, x0, y0);
+    d.release();
+    d.set_time(1400 + 2000 + 1000);
+    assert!(!press_at(&mut d, x0, y0).contains(&Event::IconOpened(10)));
+    d.release();
+    // A different icon in between.
+    d.set_time(9000);
+    press_at(&mut d, x0, y0);
+    d.release();
+    d.set_time(9100);
+    assert!(!press_at(&mut d, x1, y1).contains(&Event::IconOpened(11)));
+}
+
+#[test]
+fn double_clicking_a_title_bar_maximises_and_restores() {
+    let mut d = icon_desk();
+    d.set_resizable(1, true);
+    let before = d.window(1).unwrap().rect;
+    let t = d.chrome(1).unwrap().0;
+    let (x, y) = (t.x + 20, t.y + 5);
+    d.set_time(100);
+    press_at(&mut d, x, y);
+    d.release();
+    d.set_time(300);
+    assert!(press_at(&mut d, x, y).contains(&Event::Resized(1)));
+    d.release();
+    assert!(d.is_maximized(1));
+    assert_eq!(d.window(1).unwrap().rect, d.work_area());
+    // Again: restore. Windows that cannot be resized ignore it.
+    let t = d.chrome(1).unwrap().0;
+    let (x, y) = (t.x + 20, t.y + 5);
+    d.set_time(2000);
+    press_at(&mut d, x, y);
+    d.release();
+    d.set_time(2200);
+    assert!(press_at(&mut d, x, y).contains(&Event::Resized(1)));
+    d.release();
+    assert_eq!(d.window(1).unwrap().rect, before);
+    let t = d.chrome(2).unwrap().0;
+    d.set_time(5000);
+    press_at(&mut d, t.x + 20, t.y + 5);
+    d.release();
+    d.set_time(5100);
+    assert!(!press_at(&mut d, t.x + 20, t.y + 5).contains(&Event::Resized(2)));
+}
+
+#[test]
+fn icons_and_the_band_compose_the_same_in_pieces() {
+    let mut d = icon_desk();
+    let (r0, r1) = (d.icon_rect(0), d.icon_rect(1));
+    press_at(&mut d, r0.x - 2, r0.y - 2);
+    d.pointer_moved(r1.x + 30, r1.y + 30);
+    let mut whole = Canvas::new(W, H, 0);
+    d.compose(&mut whole, d.screen());
+    let mut pieces = Canvas::new(W, H, 0);
+    for y in (0..H as i32).step_by(43) {
+        for x in (0..W as i32).step_by(61) {
+            d.compose(&mut pieces, Rect::new(x, y, 61, 43));
+        }
+    }
+    assert_eq!(whole.pixels(), pieces.pixels());
+    // The band is visible: pixels inside it differ from the plain wallpaper.
+    let mut plain = Canvas::new(W, H, 0);
+    d.release();
+    d.pointer_moved(700, 20);
+    d.compose(&mut plain, d.screen());
+    let (bx, by) = (r0.x + 3, r0.y + 3);
+    assert_ne!(whole.get(bx, by), plain.get(bx, by));
+}
+
+#[test]
+fn moving_the_marquee_repaints_only_its_neighbourhood() {
+    let mut d = icon_desk();
+    press_at(&mut d, 500, 300);
+    d.pointer_moved(560, 340);
+    d.take_damage();
+    d.pointer_moved(570, 345);
+    let dmg = d.take_damage().iter().fold(Rect::default(), |a, r| a.union(r));
+    assert!(dmg.w < 200 && dmg.h < 150, "{dmg:?}: far less than the whole screen");
+}

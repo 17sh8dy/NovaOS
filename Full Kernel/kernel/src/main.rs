@@ -39,6 +39,7 @@ mod heap;
 mod interrupts;
 mod kmutex;
 mod log;
+mod net;
 mod nvme;
 mod pci;
 mod pipe;
@@ -54,6 +55,7 @@ mod shell;
 mod smp;
 mod system;
 mod syscall;
+mod virtio_net;
 mod vm;
 mod xhci;
 
@@ -325,6 +327,11 @@ fn kmain(boot_copy: &'static BootInfo) -> ! {
         }
         // A USB keyboard may be plugged in later, so a USB controller is enough for the shell.
         usb_input = usb.controllers > 0;
+
+        // ---- Network (virtio-net so far) ---------------------------------------
+        if net::init(&devices) {
+            net::start_service();
+        }
 
         if have_gui {
             gui::set_cpus(cpu::online_count());

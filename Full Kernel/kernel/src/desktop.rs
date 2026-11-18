@@ -291,6 +291,7 @@ fn system_lines() -> Vec<(String, String)> {
         let root = if files::root_disk() == Some(i) { ", holds /" } else { "" };
         add(&alloc::format!("Disk {i}"), alloc::format!("{model}, {} MiB, {bus}{root}", bytes >> 20));
     }
+    add("Network", crate::net::address_text());
     for line in xhci::describe().into_iter().filter(|s| s.starts_with("  port")) {
         add("USB", String::from(line.trim()));
     }
@@ -540,6 +541,14 @@ fn handle(e: Event) {
                 kprintln!("wm: Terminal is now {cols}x{rows} cells");
             }
         }
+        Event::IconOpened(id) => {
+            kprintln!("desktop: icon {} opened", name(id));
+            open_app(id);
+        }
+        Event::Selected(ids) => {
+            let names: Vec<&str> = ids.iter().map(|&i| name(i)).collect();
+            kprintln!("desktop: selected {}", if names.is_empty() { String::from("nothing") } else { names.join(", ") });
+        }
         Event::Click(CALC, x, y) => {
             let changed = gui::with(|g| {
                 let (w, h) = g.content_size(CALC);
@@ -697,6 +706,17 @@ pub fn run(irq_mode: bool) -> ! {
     let mut clock_logged = false;
 
     log_geometry(TERMINAL, "open");
+    // Where the icons are (centre and size), for the tests.
+    let icons = gui::with(|g| {
+        (0..g.desk.icons().len())
+            .map(|i| {
+                let r = g.desk.icon_rect(i);
+                alloc::format!("{} at ({}, {}) size {}x{}", name(g.desk.icons()[i].id), r.x + r.w / 2, r.y + r.h / 2, r.w, r.h)
+            })
+            .collect::<Vec<String>>()
+    })
+    .unwrap_or_default();
+    kprintln!("desktop: icons: {}", icons.join(", "));
     let theme = crate::system::settings().theme;
     gui::with(|g| g.apply_theme(theme));
     crate::system::save_boot_log();

@@ -87,7 +87,12 @@ screen; Lock from the launcher, Ctrl+Alt+L or `lock`. Only a salted PBKDF2-SHA-2
 (lock after idle, time zone, wallpaper, password). Every window can be maximised and resized, the Terminal
 included. Nova keeps its own files in **`/system`** (settings, password, boot log) and yours in `/documents`.
 
-Next stages (real-PC USB input, networking, then the Vexa browser on Nova) are in
+**Networking (first part) and desktop icons — done in QEMU.** Nova has its own network stack (Ethernet, ARP, IPv4,
+ICMP, UDP, a DHCP client and a DNS client) and a virtio-net driver: in QEMU `ip`, `ping` and `dns` work
+(`.\tools\run.ps1 -Net`). The desktop has app icons you can select with a rubber band and open with a double-click.
+Not yet: TCP/HTTP, and a driver for the Realtek card on the ASUS PC.
+
+Next stages (the Realtek driver, TCP, then the Vexa browser on Nova) are in
 [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Layout
@@ -110,6 +115,7 @@ Next stages (real-PC USB input, networking, then the Vexa browser on Nova) are i
 | `crates/gfx` | Off-screen canvases, rectangles, the 5x7 font |
 | `crates/desktop` | Window manager + compositor (windows, focus, drag, resize, maximise, taskbar, launcher, damage), lock screen, apps: Files, System, Calculator, Notes, Settings |
 | `crates/auth` | SHA-256, HMAC, PBKDF2 and the stored password record |
+| `crates/net` | The network stack as pure logic: Ethernet, ARP, IPv4, ICMP, UDP, DHCP, DNS |
 | `crates/safety` | The safety net's timing rules (crash countdown, boot/desktop watchdogs) |
 | `crates/kbd` | Keyboard scancode decoding, US layout, modifiers |
 | `crates/console` | Text grid (scrolling, dirty rows) + line editor |

@@ -74,6 +74,7 @@ dependencies = [
  "nova-gfx",
  "nova-heap",
  "nova-kbd",
+ "nova-net",
  "nova-nvme",
  "nova-paging",
  "nova-pmm",
@@ -82,6 +83,10 @@ dependencies = [
  "nova-usb",
  "nova-x86",
 ]
+
+[[package]]
+name = "nova-net"
+version = "0.1.0"
 
 [[package]]
 name = "nova-nvme"
