@@ -44,7 +44,7 @@ pub const PASSWORD: u32 = 101;
 pub const RESTART: u32 = 102;
 
 /// The line under the name on the wallpaper.
-pub const SUBTITLE: &str = "Full Kernel - Stage 12";
+pub const SUBTITLE: &str = "Full Kernel - Stage 14";
 
 pub struct Gui {
     screen: Screen,
