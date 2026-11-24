@@ -45,6 +45,7 @@ mod pci;
 mod pipe;
 mod pmm;
 mod rtc;
+mod rtl8168;
 mod safety;
 mod process;
 mod programs;

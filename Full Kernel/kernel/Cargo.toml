@@ -31,3 +31,4 @@ nova-desktop = { path = "../crates/desktop" }
 nova-safety = { path = "../crates/safety" }
 nova-auth = { path = "../crates/auth" }
 nova-net = { path = "../crates/net" }
+nova-realtek = { path = "../crates/realtek" }

@@ -18,7 +18,7 @@ Each stage ends with something that boots and is checked by `tools\test.ps1`.
 | 11 | Login + desktop polish ✅ | Password lock screen (at boot, Lock, Ctrl+Alt+L, `lock`/`passwd`), salted PBKDF2 records, hover highlights, Alt+Tab, Restart |
 | 12 | Apps + window sizing ✅ | Calculator, Notes, Settings (from scratch); maximise/restore and resize for every window (the Terminal's grid follows); idle auto-lock; the `/system` folder |
 | 13 | Real-hardware USB input ✅ | Keyboard and mouse work on the ASUS PC (the mouse needed its HID report descriptor read: `crates/usb/src/report.rs`) |
-| 14 | Networking (started) | **Done:** virtio-net driver (QEMU), Ethernet/ARP/IPv4/ICMP/UDP, DHCP client, DNS client, `ip`/`ping`/`dns`/`dhcp`. **Next:** the PC's Realtek RTL8111 driver, TCP, an HTTP client |
+| 14 | Networking (started) | **Done:** virtio-net driver (QEMU), Ethernet/ARP/IPv4/ICMP/UDP, DHCP client, DNS client, `ip`/`ping`/`dns`/`dhcp`. Realtek RTL8168/8111 driver written (not yet tried on the real PC). **Next:** confirm it on the ASUS, then TCP, an HTTP client |
 | 14b | Desktop icons + marquee ✅ | App icons on the wallpaper, rubber-band selection, double-click to open an icon or to maximise a window |
 | 15 | **Integrating Vexa** | See "Vexa on Nova" below |
 
@@ -45,6 +45,25 @@ Later: USB hubs and storage, networking, GPU, real-hardware testing on a USB sti
   host's resolver (it resolved in the first run).
 * Gaps: no TCP (so no HTTP/HTTPS yet), no IPv6, no fragment reassembly, no interrupts (10 ms polling), one card, no
   loopback, the Realtek RTL8111 on the ASUS has no driver. Planned: TCP, then an HTTP client, then Vexa on Nova.
+
+## Realtek RTL8168/8111 driver (not yet tried on real hardware)
+
+* **`crates/realtek`** (6 host tests): register offsets, the 16-byte "C+ mode" descriptors (OWN, EOR, FS, LS, length;
+  receive status with the CRC taken off, errors and split frames dropped), chip identification from TxConfig (RTL8111H
+  = version id 0x541), the receive configuration (our address, broadcast, multicast; never promiscuous; the fetch bits
+  Linux uses on RTL8168G and newer), link status, and the PHY commands: PHYAR on older chips, OCP (0xA400 + 2*reg) on
+  RTL8168G and newer.
+* **`kernel/src/rtl8168.rs`:** registers from BAR 2 (BAR 1 on old chips), interrupts masked (polled), software reset,
+  MAC read from the chip, two rings of 16 descriptors with 2 KiB buffers, transmit/receive enabled, multicast filter
+  open. It reads the PHY's BMCR/BMSR, and only if the firmware left the PHY powered down does it power it up and restart
+  auto-negotiation. It never writes the EEPROM, the MAC address, Wake-on-LAN or anything that outlives a power cycle.
+  `net.rs` wraps both cards in one `Nic` (MAC, receive, send); `ip` shows the link speed for the Realtek.
+* **Cannot be tested in QEMU** (QEMU emulates no RTL8168; the virtio tests still pass). Every step logs: `rtl8168: ...
+  RTL8168H/8111H (version id 0x541)`, `PHY via OCP: BMCR ..., BMSR ...`, `link up, 1000 Mb/s, full duplex` or `no link
+  yet`, then `net: Realtek ... up, MAC ...` and the DHCP lease. A photo of those lines is the bug report.
+* Not done (Linux does more for some versions): per-version PHY tweaks and the PHY firmware patch Linux loads for the
+  RTL8168H (`rtl8168h-2.fw`), power-saving setup, interrupts, jumbo frames, checksum offload. Basic links usually work
+  without them; if this one does not, those are the first suspects.
 
 ## Desktop icons and marquee selection
 

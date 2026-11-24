@@ -1,0 +1,6 @@
+[package]
+name = "nova-realtek"
+description = "Realtek RTL8168/RTL8111 Ethernet: registers, descriptors, chip identification and PHY access (pure logic)."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true

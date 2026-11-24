@@ -8,11 +8,18 @@ detail; this page is the orientation + current state.
 Machine-specific details (the signing machine's address, drive letters, which PC) are NOT in git (public
 repo). They are in `LOCAL-NOTES.md` next to this folder's `README.md` (git-ignored). Read it too.
 
+## 2026-11-24: Realtek RTL8168/8111 driver (written, NOT yet tried on the ASUS)
+
+* `crates/realtek` + `kernel/src/rtl8168.rs` (see `docs/ROADMAP.md`, "Realtek RTL8168/8111 driver"). QEMU cannot
+  emulate the chip, so the only real test is the ASUS: needs an Ethernet cable plugged into the board's port. Look
+  for the `rtl8168:` and `net:` lines in the boot log, then `ip` and `ping 1.1.1.1` / `dns example.com` in the Terminal.
+* Wallpaper subtitle now says Stage 14.
+
 ## 2026-11-18 (later): networking started + desktop icons/marquee (QEMU only)
 
 * **Networking:** `crates/net` (pure stack: ARP, IPv4, ICMP, UDP, DHCP, DNS), virtio-net driver, shell commands
   `ip`, `ping`, `dns`, `dhcp`. Works in QEMU (`tools\run.ps1 -Net`, `boot_test.py --net`). **The ASUS has a Realtek
-  card: no driver yet**, so `ip` there says no usable network card. Next: the Realtek driver, then TCP, HTTP, Vexa.
+  card**: its driver came later (2026-11-24, above). Next: TCP, HTTP, Vexa.
 * **Desktop icons + marquee selection + double-click** (see `docs/ROADMAP.md`, "Desktop icons and marquee selection").
   The Terminal now opens right of the icon column (x = 160u).
 * Committed and pushed (full-kernel).

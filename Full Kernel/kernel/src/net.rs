@@ -2,13 +2,15 @@
 //! (`crates/net`) on a thread, and implements the shell commands `ip`,
 //! `ping`, `dns` and `dhcp`.
 //!
-//! Only virtio-net (QEMU, most hypervisors) is supported so far; a real PC's
-//! Realtek or Intel card needs its own driver, which plugs in where
-//! [`Nic`] is used. Polled every 10 ms: a received frame waits at most one
-//! timer tick, which is fine for DHCP, DNS and ping.
+//! Cards: virtio-net (QEMU, most hypervisors) and the Realtek RTL8168/8111
+//! family (most desktop boards, the ASUS PC's RTL8111H). Each driver offers
+//! the same three things (MAC address, receive, send), wrapped in [`Nic`].
+//! Polled every 10 ms: a received frame waits at most one timer tick, which is
+//! fine for DHCP, DNS and ping.
 
 use crate::kmutex::KMutex;
 use crate::pci::PciDevice;
+use crate::rtl8168::Rtl8168;
 use crate::virtio_net::{self, VirtioNet};
 use crate::{interrupts, kprintln, sched};
 use alloc::string::String;
@@ -18,7 +20,48 @@ use nova_net::stack::{Event, Stack};
 use nova_net::wire::{self, Ip};
 
 /// The card the stack uses.
-type Nic = VirtioNet;
+enum Nic {
+    Virtio(VirtioNet),
+    Realtek(Rtl8168),
+}
+
+impl Nic {
+    fn mac(&self) -> [u8; 6] {
+        match self {
+            Nic::Virtio(n) => n.mac,
+            Nic::Realtek(n) => n.mac,
+        }
+    }
+
+    fn recv(&mut self) -> Option<Vec<u8>> {
+        match self {
+            Nic::Virtio(n) => n.recv(),
+            Nic::Realtek(n) => n.recv(),
+        }
+    }
+
+    fn send(&mut self, frame: &[u8]) -> bool {
+        match self {
+            Nic::Virtio(n) => n.send(frame),
+            Nic::Realtek(n) => n.send(frame),
+        }
+    }
+
+    /// The physical link, for cards that know it.
+    fn link_text(&self) -> Option<String> {
+        match self {
+            Nic::Virtio(_) => None,
+            Nic::Realtek(n) => {
+                let l = n.link();
+                Some(if l.up {
+                    alloc::format!("link up, {} Mb/s {} duplex ({} receive errors)", l.mbps, if l.full_duplex { "full" } else { "half" }, n.rx_errors)
+                } else {
+                    String::from("no link (is the cable plugged in?)")
+                })
+            }
+        }
+    }
+}
 
 struct Net {
     nic: Nic,
@@ -42,19 +85,26 @@ pub fn init(devices: &[PciDevice]) -> bool {
         return false;
     }
     for d in &nics {
-        if !virtio_net::is_virtio_net(d) {
-            kprintln!("net: {} {:04x}:{:04x}: no driver for this network card yet (only virtio-net)", d.address(), d.vendor, d.device_id);
+        let found = if virtio_net::is_virtio_net(d) {
+            VirtioNet::probe(d).map(|n| (Nic::Virtio(n), String::from("virtio-net"))).map_err(String::from)
+        } else if nova_realtek::is_supported(d.vendor, d.device_id) {
+            Rtl8168::probe(d).map(|n| {
+                let chip = String::from(n.chip());
+                (Nic::Realtek(n), alloc::format!("Realtek {chip}"))
+            })
+        } else {
+            kprintln!("net: {} {:04x}:{:04x}: no driver for this network card yet (virtio-net and Realtek RTL8168/8111 only)", d.address(), d.vendor, d.device_id);
             continue;
-        }
-        match VirtioNet::probe(d) {
-            Ok(nic) => {
-                let mac = nic.mac;
+        };
+        match found {
+            Ok((nic, kind)) => {
+                let mac = nic.mac();
                 let seed = (nova_x86::rdtsc() as u32) ^ u32::from_le_bytes([mac[2], mac[3], mac[4], mac[5]]);
-                kprintln!("net: virtio-net {} up, MAC {}", d.address(), wire::mac_text(mac));
-                *NET.lock() = Some(Net { nic, stack: Stack::new(mac, seed), events: Vec::new(), name: alloc::format!("virtio-net {}", d.address()) });
+                kprintln!("net: {kind} {} up, MAC {}", d.address(), wire::mac_text(mac));
+                *NET.lock() = Some(Net { nic, stack: Stack::new(mac, seed), events: Vec::new(), name: alloc::format!("{kind} {}", d.address()) });
                 return true;
             }
-            Err(e) => kprintln!("net: virtio-net {}: {e}", d.address()),
+            Err(e) => kprintln!("net: {} {:04x}:{:04x}: {e}", d.address(), d.vendor, d.device_id),
         }
     }
     false
@@ -136,8 +186,11 @@ pub fn start_service() {
 /// Lines for the System window and the `ip` command.
 pub fn describe() -> Vec<String> {
     let g = NET.lock();
-    let Some(net) = g.as_ref() else { return alloc::vec![String::from("no network card (only virtio-net is supported so far)")] };
+    let Some(net) = g.as_ref() else { return alloc::vec![String::from("no usable network card (drivers: virtio-net, Realtek RTL8168/8111)")] };
     let mut v = alloc::vec![alloc::format!("{}, MAC {}", net.name, wire::mac_text(net.stack.mac()))];
+    if let Some(l) = net.nic.link_text() {
+        v.push(l);
+    }
     match net.stack.lease() {
         Some(l) => {
             v.push(alloc::format!("address {}", lease_text(l)));
